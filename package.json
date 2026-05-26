@@ -2,6 +2,7 @@
   "name": "stream-pulse",
   "private": true,
   "version": "0.0.1",
+  "packageManager": "pnpm@9.15.9",
   "description": "Agentic livestream quality observability and incident orchestration for WebRTC sessions",
   "engines": {
     "node": ">=20",

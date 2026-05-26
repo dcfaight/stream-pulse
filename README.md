@@ -46,15 +46,53 @@ StreamPulse is a real-time media control plane — not a livestream platform. It
 
 ---
 
-## Quick Start (Coming in M1)
+## Quick Start (M1 Runnable Foundation Slice)
 
 ```bash
 # Prerequisites: Node 20+, pnpm 9+, Docker
 git clone https://github.com/dcfaight/stream-pulse.git
 cd stream-pulse
+
+# Enable pnpm if not already available
+corepack enable
+corepack prepare pnpm@9 --activate
+
+# Install workspace deps
 pnpm install
-pnpm dev
+
+# Start Postgres + Redis
+docker compose up -d postgres redis
+
+# Run DB migrations
+pnpm --filter @stream-pulse/db migrate
+
+# Start ingestor (http://localhost:4001)
+pnpm --filter @stream-pulse/ingestor dev
+
+# In another terminal start dashboard (http://localhost:3000)
+pnpm --filter @stream-pulse/dashboard dev
 ```
+
+---
+
+## Synthetic Telemetry Proof (End-to-End)
+
+Send one synthetic telemetry event to ingestor:
+
+```bash
+curl -X POST http://localhost:4001/telemetry \
+  -H "Content-Type: application/json" \
+  -d '{
+    "broadcasterId":"demo-broadcaster",
+    "metricType":"rtt_ms",
+    "value":87.5
+  }'
+```
+
+Expected result:
+- `GET http://localhost:4001/health` returns `{ "status": "ok", "service": "ingestor" }`
+- `POST /telemetry` returns `sessionId` + `eventId`
+- Dashboard home page shows the inserted session/event row from Postgres
 
 ---
 
@@ -70,6 +108,17 @@ pnpm dev
 
 ## Status
 
-🚧 **Pre-MVP — documentation and architecture phase**
+🚧 **M1 foundation slice in progress**
 
-See the [MVP Roadmap](docs/roadmap/mvp-roadmap.md) for planned milestones.
+What is now runnable:
+- pnpm workspace install/build/lint/test baseline
+- local Postgres + Redis via Docker Compose
+- migration runner in `packages/db`
+- ingestor with `/health` and `/telemetry`
+- dashboard session/status page backed by Postgres data
+
+Still deferred for later milestones:
+- QoE scoring engine logic
+- Agent orchestrator logic
+- WebRTC SDK production ingestion path
+- Incident replay and live stream updates

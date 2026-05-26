@@ -224,7 +224,7 @@ async function detectAndPersistIncident(input: {
         incidentId: incident.id,
         ts: input.endTs,
         eventType: 'anomaly_detected',
-        payload: anomaly,
+        payload: { ...anomaly },
       });
     }
     return;
@@ -259,7 +259,7 @@ async function detectAndPersistIncident(input: {
       incidentId: existingIncident.id,
       ts: input.endTs,
       eventType: 'anomaly_detected',
-      payload: anomaly,
+      payload: { ...anomaly },
     });
   }
 }

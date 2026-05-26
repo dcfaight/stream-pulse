@@ -1,4 +1,5 @@
 import { listRecentSessionStatus } from '@stream-pulse/db';
+import { AutoRefresh } from './auto-refresh';
 
 export const dynamic = 'force-dynamic';
 
@@ -10,15 +11,24 @@ function formatTimestamp(value: Date | null): string {
   }).format(value);
 }
 
+function severityStyle(severity: string | null): { backgroundColor: string; color: string } {
+  if (severity === 'good') return { backgroundColor: '#e7f8ed', color: '#166534' };
+  if (severity === 'degraded') return { backgroundColor: '#fff8db', color: '#854d0e' };
+  if (severity === 'poor') return { backgroundColor: '#ffe7d6', color: '#9a3412' };
+  if (severity === 'critical') return { backgroundColor: '#fee2e2', color: '#991b1b' };
+  return { backgroundColor: '#f3f4f6', color: '#374151' };
+}
+
 export default async function Home() {
-  let sessions = await listRecentSessionStatus(25).catch(() => []);
+  const sessions = await listRecentSessionStatus(25).catch(() => []);
 
   return (
     <main style={{ fontFamily: 'system-ui, sans-serif', margin: '2rem auto', maxWidth: 980 }}>
+      <AutoRefresh intervalMs={5000} />
       <h1>StreamPulse Status</h1>
       <p>
-        Milestone 1 vertical slice status page with persisted session and telemetry event data from
-        Postgres.
+        Milestone 1.5/M2 slice status page with persisted session telemetry and deterministic QoE
+        segments from Postgres. Refreshes every 5 seconds.
       </p>
 
       <h2>Recent Sessions ({sessions.length})</h2>
@@ -43,6 +53,9 @@ export default async function Home() {
                 'Latest Metric',
                 'Latest Value',
                 'Latest Event Time',
+                'QoE Score',
+                'QoE Severity',
+                'QoE Updated',
               ].map((heading) => (
                 <th
                   key={heading}
@@ -77,6 +90,30 @@ export default async function Home() {
                 </td>
                 <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
                   {formatTimestamp(session.latest_metric_ts)}
+                </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  {session.latest_qoe_score ?? '—'}
+                </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  {session.latest_qoe_severity ? (
+                    <span
+                      style={{
+                        ...severityStyle(session.latest_qoe_severity),
+                        borderRadius: '999px',
+                        display: 'inline-block',
+                        fontWeight: 600,
+                        padding: '0.15rem 0.5rem',
+                        textTransform: 'capitalize',
+                      }}
+                    >
+                      {session.latest_qoe_severity}
+                    </span>
+                  ) : (
+                    '—'
+                  )}
+                </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  {formatTimestamp(session.latest_qoe_end_ts)}
                 </td>
               </tr>
             ))}

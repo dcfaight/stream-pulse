@@ -1,0 +1,94 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: streampulse
+      POSTGRES_PASSWORD: streampulse
+      POSTGRES_DB: streampulse
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U streampulse"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Uncomment after M1 apps are scaffolded:
+  # ingestor:
+  #   build:
+  #     context: .
+  #     dockerfile: infra/docker/ingestor.Dockerfile
+  #   ports:
+  #     - "4001:4001"
+  #   environment:
+  #     DATABASE_URL: postgresql://streampulse:streampulse@postgres:5432/streampulse
+  #     REDIS_URL: redis://redis:6379
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #     redis:
+  #       condition: service_healthy
+
+  # qoe-engine:
+  #   build:
+  #     context: .
+  #     dockerfile: infra/docker/qoe-engine.Dockerfile
+  #   ports:
+  #     - "4002:4002"
+  #   environment:
+  #     DATABASE_URL: postgresql://streampulse:streampulse@postgres:5432/streampulse
+  #     REDIS_URL: redis://redis:6379
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #     redis:
+  #       condition: service_healthy
+
+  # agent-orchestrator:
+  #   build:
+  #     context: .
+  #     dockerfile: infra/docker/agent-orchestrator.Dockerfile
+  #   ports:
+  #     - "4003:4003"
+  #   environment:
+  #     DATABASE_URL: postgresql://streampulse:streampulse@postgres:5432/streampulse
+  #     REDIS_URL: redis://redis:6379
+  #     LLM_API_KEY: ${LLM_API_KEY}
+  #     LLM_BASE_URL: ${LLM_BASE_URL:-https://api.openai.com/v1}
+  #     LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #     redis:
+  #       condition: service_healthy
+
+  # dashboard:
+  #   build:
+  #     context: .
+  #     dockerfile: infra/docker/dashboard.Dockerfile
+  #   ports:
+  #     - "3000:3000"
+  #   environment:
+  #     NEXT_PUBLIC_INGESTOR_WS_URL: ws://localhost:4001/ws/stats
+  #     NEXT_PUBLIC_API_BASE_URL: http://localhost:4003
+  #   depends_on:
+  #     - ingestor
+  #     - agent-orchestrator
+
+volumes:
+  postgres_data:
+  redis_data:

@@ -1,0 +1,22 @@
+{
+  "name": "@stream-pulse/ingestor",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "lint": "echo 'Lint not configured yet'"
+  },
+  "dependencies": {
+    "@stream-pulse/types": "workspace:*",
+    "@stream-pulse/event-bus": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "*",
+    "tsx": "^4.19.2",
+    "vitest": "^2.1.8"
+  }
+}

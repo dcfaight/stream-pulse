@@ -1,0 +1,22 @@
+{
+  "name": "stream-pulse",
+  "private": true,
+  "version": "0.0.1",
+  "description": "Agentic livestream quality observability and incident orchestration for WebRTC sessions",
+  "engines": {
+    "node": ">=20",
+    "pnpm": ">=9"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "test": "turbo run test",
+    "lint": "turbo run lint",
+    "format": "prettier --write \"**/*.{ts,tsx,js,json,md}\" --ignore-path .gitignore"
+  },
+  "devDependencies": {
+    "turbo": "^2.3.3",
+    "prettier": "^3.4.2",
+    "typescript": "^5.7.3"
+  }
+}

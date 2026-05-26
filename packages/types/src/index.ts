@@ -9,6 +9,7 @@ export type { QoESegment, QoEEvent, Severity } from './qoe.js';
 export type {
   AnomalyEvent,
   Incident,
+  IncidentStatus,
   IncidentTimelineEntry,
 } from './incident.js';
 export type {

@@ -1,5 +1,7 @@
 import type { Severity } from './qoe.js';
 
+export type IncidentStatus = 'open' | 'resolved';
+
 export interface AnomalyEvent {
   sessionId: string;
   ts: number;
@@ -22,6 +24,7 @@ export interface Incident {
   sessionId: string;
   startedAt: number;
   resolvedAt?: number;
+  status: IncidentStatus;
   rootCause: string;
   confidence: number; // 0.0–1.0
   severity: Severity;

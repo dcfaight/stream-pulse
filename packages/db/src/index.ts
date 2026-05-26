@@ -61,6 +61,55 @@ export interface QoESegmentRow {
   signals: unknown;
 }
 
+export interface IncidentRow {
+  id: string;
+  session_id: string;
+  started_at: Date;
+  resolved_at: Date | null;
+  status: string;
+  root_cause: string;
+  confidence: string;
+  severity: string;
+  updated_at: Date;
+}
+
+export interface IncidentTimelineRow {
+  id: string;
+  incident_id: string;
+  ts: Date;
+  event_type: string;
+  payload: unknown;
+}
+
+export interface IncidentFeedRow extends IncidentRow {
+  broadcaster_id: string;
+  latest_event_ts: Date | null;
+  latest_event_type: string | null;
+  latest_event_payload: unknown;
+}
+
+export interface RecommendationRow {
+  id: string;
+  incident_id: string | null;
+  agent_name: string;
+  created_at: Date;
+  recommendation_text: string;
+  rationale: string;
+  action_type: string;
+  priority: string;
+  status: string;
+  trigger_signals: unknown;
+}
+
+export interface RecommendationFeedRow extends RecommendationRow {
+  session_id: string | null;
+  incident_severity: string | null;
+  incident_root_cause: string | null;
+  latest_decision: string | null;
+  latest_operator_id: string | null;
+  latest_decided_at: Date | null;
+}
+
 function assertMigrationFile(fileName: string): void {
   if (!/^\d+_.+\.sql$/.test(fileName)) {
     throw new Error(`Invalid migration filename: ${fileName}`);
@@ -322,6 +371,314 @@ export async function insertQoeSegment(input: {
   }
 
   return qoeSegment;
+}
+
+export async function findRecentOpenIncidentForSession(
+  sessionId: string,
+  withinMinutes = 10,
+): Promise<IncidentRow | null> {
+  const safeWithinMinutes = Number.isFinite(withinMinutes)
+    ? Math.max(1, Math.min(120, Math.floor(withinMinutes)))
+    : 10;
+  const result = await runQuery<IncidentRow>(
+    `
+      SELECT id, session_id, started_at, resolved_at, status, root_cause, confidence::text AS confidence, severity, updated_at
+      FROM incidents
+      WHERE session_id = $1
+        AND status = 'open'
+        AND updated_at >= now() - ($2 * interval '1 minute')
+      ORDER BY updated_at DESC
+      LIMIT 1;
+    `,
+    [sessionId, safeWithinMinutes],
+  );
+
+  return result.rows[0] ?? null;
+}
+
+export async function createIncident(input: {
+  sessionId: string;
+  startedAt: Date;
+  severity: string;
+  rootCause: string;
+  confidence: number;
+}): Promise<IncidentRow> {
+  const result = await runQuery<IncidentRow>(
+    `
+      INSERT INTO incidents (session_id, started_at, updated_at, severity, root_cause, confidence, status)
+      VALUES ($1, $2, $2, $3, $4, $5, 'open')
+      RETURNING id, session_id, started_at, resolved_at, status, root_cause, confidence::text AS confidence, severity, updated_at;
+    `,
+    [input.sessionId, input.startedAt, input.severity, input.rootCause, input.confidence],
+  );
+  const incident = result.rows[0];
+  if (!incident) {
+    throw new Error('Failed to create incident');
+  }
+  return incident;
+}
+
+export async function updateIncident(input: {
+  incidentId: string;
+  updatedAt: Date;
+  severity: string;
+  rootCause: string;
+  confidence: number;
+}): Promise<IncidentRow> {
+  const result = await runQuery<IncidentRow>(
+    `
+      UPDATE incidents
+      SET severity = $2,
+          root_cause = $3,
+          confidence = $4,
+          updated_at = $5
+      WHERE id = $1
+      RETURNING id, session_id, started_at, resolved_at, status, root_cause, confidence::text AS confidence, severity, updated_at;
+    `,
+    [input.incidentId, input.severity, input.rootCause, input.confidence, input.updatedAt],
+  );
+  const incident = result.rows[0];
+  if (!incident) {
+    throw new Error(`Failed to update incident ${input.incidentId}`);
+  }
+  return incident;
+}
+
+export async function insertIncidentTimelineEntry(input: {
+  incidentId: string;
+  ts: Date;
+  eventType: string;
+  payload: Record<string, unknown>;
+}): Promise<IncidentTimelineRow> {
+  const result = await runQuery<IncidentTimelineRow>(
+    `
+      INSERT INTO incident_timeline (incident_id, ts, event_type, payload)
+      VALUES ($1, $2, $3, $4::jsonb)
+      RETURNING id, incident_id, ts, event_type, payload;
+    `,
+    [input.incidentId, input.ts, input.eventType, JSON.stringify(input.payload)],
+  );
+
+  const timelineEntry = result.rows[0];
+  if (!timelineEntry) {
+    throw new Error('Failed to create incident timeline entry');
+  }
+  return timelineEntry;
+}
+
+export async function listRecentIncidents(limit = 25): Promise<IncidentFeedRow[]> {
+  const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(100, Math.floor(limit))) : 25;
+  const result = await runQuery<IncidentFeedRow>(
+    `
+      SELECT
+        i.id,
+        i.session_id,
+        i.started_at,
+        i.resolved_at,
+        i.status,
+        i.root_cause,
+        i.confidence::text AS confidence,
+        i.severity,
+        i.updated_at,
+        s.broadcaster_id,
+        lt.ts AS latest_event_ts,
+        lt.event_type AS latest_event_type,
+        lt.payload AS latest_event_payload
+      FROM incidents i
+      JOIN sessions s ON s.id = i.session_id
+      LEFT JOIN LATERAL (
+        SELECT ts, event_type, payload
+        FROM incident_timeline
+        WHERE incident_id = i.id
+        ORDER BY ts DESC
+        LIMIT 1
+      ) lt ON TRUE
+      ORDER BY i.updated_at DESC
+      LIMIT $1;
+    `,
+    [safeLimit],
+  );
+
+  return result.rows;
+}
+
+export async function listIncidentsForRecommendation(limit = 25): Promise<IncidentFeedRow[]> {
+  const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(100, Math.floor(limit))) : 25;
+  const result = await runQuery<IncidentFeedRow>(
+    `
+      SELECT
+        i.id,
+        i.session_id,
+        i.started_at,
+        i.resolved_at,
+        i.status,
+        i.root_cause,
+        i.confidence::text AS confidence,
+        i.severity,
+        i.updated_at,
+        s.broadcaster_id,
+        lt.ts AS latest_event_ts,
+        lt.event_type AS latest_event_type,
+        lt.payload AS latest_event_payload
+      FROM incidents i
+      JOIN sessions s ON s.id = i.session_id
+      JOIN LATERAL (
+        SELECT ts, event_type, payload
+        FROM incident_timeline
+        WHERE incident_id = i.id
+        ORDER BY ts DESC
+        LIMIT 1
+      ) lt ON TRUE
+      WHERE i.status = 'open'
+        AND NOT EXISTS (
+          SELECT 1
+          FROM agent_recommendations pending
+          WHERE pending.incident_id = i.id
+            AND pending.status = 'pending'
+        )
+        AND COALESCE((
+          SELECT MAX(created_at)
+          FROM agent_recommendations rec
+          WHERE rec.incident_id = i.id
+        ), 'epoch'::timestamptz) < lt.ts
+      ORDER BY lt.ts DESC
+      LIMIT $1;
+    `,
+    [safeLimit],
+  );
+
+  return result.rows;
+}
+
+export async function createRecommendation(input: {
+  incidentId: string;
+  agentName: string;
+  recommendationText: string;
+  rationale: string;
+  actionType: string;
+  priority: string;
+  triggerSignals: Record<string, number>;
+}): Promise<RecommendationRow> {
+  const result = await runQuery<RecommendationRow>(
+    `
+      INSERT INTO agent_recommendations (
+        incident_id,
+        agent_name,
+        recommendation_text,
+        rationale,
+        action_type,
+        priority,
+        status,
+        trigger_signals
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7::jsonb)
+      RETURNING
+        id,
+        incident_id,
+        agent_name,
+        created_at,
+        recommendation_text,
+        rationale,
+        action_type,
+        priority,
+        status,
+        trigger_signals;
+    `,
+    [
+      input.incidentId,
+      input.agentName,
+      input.recommendationText,
+      input.rationale,
+      input.actionType,
+      input.priority,
+      JSON.stringify(input.triggerSignals),
+    ],
+  );
+  const recommendation = result.rows[0];
+  if (!recommendation) {
+    throw new Error('Failed to create recommendation');
+  }
+  return recommendation;
+}
+
+export async function listRecentRecommendations(limit = 25): Promise<RecommendationFeedRow[]> {
+  const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(100, Math.floor(limit))) : 25;
+  const result = await runQuery<RecommendationFeedRow>(
+    `
+      SELECT
+        r.id,
+        r.incident_id,
+        r.agent_name,
+        r.created_at,
+        r.recommendation_text,
+        r.rationale,
+        r.action_type,
+        r.priority,
+        r.status,
+        r.trigger_signals,
+        i.session_id,
+        i.severity AS incident_severity,
+        i.root_cause AS incident_root_cause,
+        oa.decision AS latest_decision,
+        oa.operator_id AS latest_operator_id,
+        oa.decided_at AS latest_decided_at
+      FROM agent_recommendations r
+      LEFT JOIN incidents i ON i.id = r.incident_id
+      LEFT JOIN LATERAL (
+        SELECT decision, operator_id, decided_at
+        FROM operator_actions
+        WHERE recommendation_id = r.id
+        ORDER BY decided_at DESC
+        LIMIT 1
+      ) oa ON TRUE
+      ORDER BY r.created_at DESC
+      LIMIT $1;
+    `,
+    [safeLimit],
+  );
+
+  return result.rows;
+}
+
+export async function decideRecommendation(input: {
+  recommendationId: string;
+  operatorId: string;
+  decision: 'approve' | 'dismiss';
+  notes?: string;
+}): Promise<{ recommendationId: string; status: string }> {
+  const nextStatus = input.decision === 'approve' ? 'approved' : 'dismissed';
+  const client = await getDbPool().connect();
+  try {
+    await client.query('BEGIN');
+    const updateResult = await client.query<{ id: string; status: string }>(
+      `
+        UPDATE agent_recommendations
+        SET status = $2
+        WHERE id = $1
+          AND status = 'pending'
+        RETURNING id, status;
+      `,
+      [input.recommendationId, nextStatus],
+    );
+    const recommendation = updateResult.rows[0];
+    if (!recommendation) {
+      throw new Error('Recommendation is not pending or does not exist');
+    }
+    await client.query(
+      `
+        INSERT INTO operator_actions (recommendation_id, operator_id, decision, notes)
+        VALUES ($1, $2, $3, $4);
+      `,
+      [input.recommendationId, input.operatorId, input.decision, input.notes ?? null],
+    );
+    await client.query('COMMIT');
+    return { recommendationId: recommendation.id, status: recommendation.status };
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 export { getDbPool } from './client.js';

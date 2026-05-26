@@ -1,4 +1,10 @@
-import { listRecentSessionStatus } from '@stream-pulse/db';
+import {
+  decideRecommendation,
+  listRecentIncidents,
+  listRecentRecommendations,
+  listRecentSessionStatus,
+} from '@stream-pulse/db';
+import { revalidatePath } from 'next/cache';
 import { AutoRefresh } from './auto-refresh';
 
 export const dynamic = 'force-dynamic';
@@ -19,8 +25,48 @@ function severityStyle(severity: string | null): { backgroundColor: string; colo
   return { backgroundColor: '#f3f4f6', color: '#374151' };
 }
 
+function statusStyle(status: string | null): { backgroundColor: string; color: string } {
+  if (status === 'pending') return { backgroundColor: '#fff8db', color: '#854d0e' };
+  if (status === 'approved') return { backgroundColor: '#e7f8ed', color: '#166534' };
+  if (status === 'dismissed') return { backgroundColor: '#fee2e2', color: '#991b1b' };
+  if (status === 'open') return { backgroundColor: '#ffe7d6', color: '#9a3412' };
+  return { backgroundColor: '#f3f4f6', color: '#374151' };
+}
+
+async function approveRecommendation(formData: FormData): Promise<void> {
+  'use server';
+
+  const recommendationId = String(formData.get('recommendationId') ?? '');
+  if (!recommendationId) return;
+
+  await decideRecommendation({
+    recommendationId,
+    operatorId: 'local-operator',
+    decision: 'approve',
+    notes: 'Approved from dashboard',
+  });
+  revalidatePath('/');
+}
+
+async function dismissRecommendation(formData: FormData): Promise<void> {
+  'use server';
+
+  const recommendationId = String(formData.get('recommendationId') ?? '');
+  if (!recommendationId) return;
+
+  await decideRecommendation({
+    recommendationId,
+    operatorId: 'local-operator',
+    decision: 'dismiss',
+    notes: 'Dismissed from dashboard',
+  });
+  revalidatePath('/');
+}
+
 export default async function Home() {
   const sessions = await listRecentSessionStatus(25).catch(() => []);
+  const incidents = await listRecentIncidents(25).catch(() => []);
+  const recommendations = await listRecentRecommendations(25).catch(() => []);
 
   return (
     <main style={{ fontFamily: 'system-ui, sans-serif', margin: '2rem auto', maxWidth: 980 }}>
@@ -114,6 +160,202 @@ export default async function Home() {
                 </td>
                 <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
                   {formatTimestamp(session.latest_qoe_end_ts)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      <h2 style={{ marginTop: '2rem' }}>Incident Feed ({incidents.length})</h2>
+      {incidents.length === 0 ? (
+        <p>No incidents yet. Run a degraded simulator scenario to trigger deterministic detection.</p>
+      ) : (
+        <table style={{ borderCollapse: 'collapse', width: '100%', border: '1px solid #ddd' }}>
+          <thead>
+            <tr>
+              {[
+                'Incident ID',
+                'Session ID',
+                'Broadcaster',
+                'Severity',
+                'Status',
+                'Root Cause Hypothesis',
+                'Started',
+                'Updated',
+              ].map((heading) => (
+                <th
+                  key={heading}
+                  style={{ border: '1px solid #ddd', padding: '0.5rem', textAlign: 'left' }}
+                >
+                  {heading}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {incidents.map((incident) => (
+              <tr key={incident.id}>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  <code>{incident.id}</code>
+                </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  <code>{incident.session_id}</code>
+                </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  {incident.broadcaster_id}
+                </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  <span
+                    style={{
+                      ...severityStyle(incident.severity),
+                      borderRadius: '999px',
+                      display: 'inline-block',
+                      fontWeight: 600,
+                      padding: '0.15rem 0.5rem',
+                      textTransform: 'capitalize',
+                    }}
+                  >
+                    {incident.severity}
+                  </span>
+                </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  <span
+                    style={{
+                      ...statusStyle(incident.status),
+                      borderRadius: '999px',
+                      display: 'inline-block',
+                      fontWeight: 600,
+                      padding: '0.15rem 0.5rem',
+                      textTransform: 'capitalize',
+                    }}
+                  >
+                    {incident.status}
+                  </span>
+                </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  {incident.root_cause || '—'}
+                </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  {formatTimestamp(incident.started_at)}
+                </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  {formatTimestamp(incident.updated_at)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      <h2 style={{ marginTop: '2rem' }}>Recommendations ({recommendations.length})</h2>
+      {recommendations.length === 0 ? (
+        <p>No recommendations yet. Start the agent orchestrator to generate recommendations.</p>
+      ) : (
+        <table style={{ borderCollapse: 'collapse', width: '100%', border: '1px solid #ddd' }}>
+          <thead>
+            <tr>
+              {[
+                'Recommendation ID',
+                'Session ID',
+                'Incident Severity',
+                'Agent',
+                'Priority',
+                'Action Type',
+                'Recommendation',
+                'Rationale',
+                'Status',
+                'Created',
+                'Decision',
+              ].map((heading) => (
+                <th
+                  key={heading}
+                  style={{ border: '1px solid #ddd', padding: '0.5rem', textAlign: 'left' }}
+                >
+                  {heading}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {recommendations.map((recommendation) => (
+              <tr key={recommendation.id}>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  <code>{recommendation.id}</code>
+                </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  {recommendation.session_id ? <code>{recommendation.session_id}</code> : '—'}
+                </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  {recommendation.incident_severity ? (
+                    <span
+                      style={{
+                        ...severityStyle(recommendation.incident_severity),
+                        borderRadius: '999px',
+                        display: 'inline-block',
+                        fontWeight: 600,
+                        padding: '0.15rem 0.5rem',
+                        textTransform: 'capitalize',
+                      }}
+                    >
+                      {recommendation.incident_severity}
+                    </span>
+                  ) : (
+                    '—'
+                  )}
+                </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  {recommendation.agent_name}
+                </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem', textTransform: 'capitalize' }}>
+                  {recommendation.priority}
+                </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  {recommendation.action_type}
+                </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  {recommendation.recommendation_text}
+                </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  {recommendation.rationale}
+                </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  <span
+                    style={{
+                      ...statusStyle(recommendation.status),
+                      borderRadius: '999px',
+                      display: 'inline-block',
+                      fontWeight: 600,
+                      padding: '0.15rem 0.5rem',
+                      textTransform: 'capitalize',
+                    }}
+                  >
+                    {recommendation.status}
+                  </span>
+                </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  {formatTimestamp(recommendation.created_at)}
+                </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  {recommendation.status === 'pending' ? (
+                    <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                      <form action={approveRecommendation}>
+                        <input type="hidden" name="recommendationId" value={recommendation.id} />
+                        <button type="submit">Approve</button>
+                      </form>
+                      <form action={dismissRecommendation}>
+                        <input type="hidden" name="recommendationId" value={recommendation.id} />
+                        <button type="submit">Dismiss</button>
+                      </form>
+                    </div>
+                  ) : recommendation.latest_decision ? (
+                    <>
+                      {recommendation.latest_decision} by {recommendation.latest_operator_id ?? 'unknown'} at{' '}
+                      {formatTimestamp(recommendation.latest_decided_at)}
+                    </>
+                  ) : (
+                    '—'
+                  )}
                 </td>
               </tr>
             ))}

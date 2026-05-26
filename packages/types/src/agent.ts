@@ -22,6 +22,7 @@ export interface Recommendation {
   incidentId?: string;
   agentName: string;
   createdAt: number;
+  recommendationText: string;
   rationale: string;
   actionType: string;
   status: RecommendationStatus;

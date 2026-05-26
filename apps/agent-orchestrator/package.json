@@ -11,6 +11,7 @@
     "lint": "echo 'Lint not configured yet'"
   },
   "dependencies": {
+    "@stream-pulse/db": "workspace:*",
     "@stream-pulse/types": "workspace:*",
     "@stream-pulse/event-bus": "workspace:*"
   },

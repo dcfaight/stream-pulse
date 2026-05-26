@@ -46,7 +46,7 @@ StreamPulse is a real-time media control plane — not a livestream platform. It
 
 ---
 
-## Quick Start (M1.5 + First M2 QoE Slice)
+## Quick Start (M2 incidents + first agentic workflow)
 
 ```bash
 # Prerequisites: Node 20+, pnpm 9+, Docker
@@ -71,6 +71,9 @@ pnpm --filter @stream-pulse/ingestor dev
 
 # In another terminal start QoE engine (polls DB and writes qoe_segments)
 pnpm --filter @stream-pulse/qoe-engine dev
+
+# In another terminal start agent orchestrator (polls incidents and writes recommendations)
+pnpm --filter @stream-pulse/agent-orchestrator dev
 
 # In another terminal start dashboard (http://localhost:3000)
 pnpm --filter @stream-pulse/dashboard dev
@@ -100,7 +103,44 @@ Expected result:
 - `GET http://localhost:4001/health` returns `{ "status": "ok", "service": "ingestor" }`
 - simulator posts telemetry events to `POST /telemetry`
 - QoE engine creates `qoe_segments` rows for those sessions
-- dashboard home page refreshes every 5 seconds and shows latest metric + QoE score + severity
+- deterministic anomaly/incident detection creates or updates `incidents` + `incident_timeline`
+- orchestrator creates deterministic recommendations in `agent_recommendations`
+- dashboard refreshes every 5 seconds and shows sessions, incidents, and recommendations with approve/dismiss actions
+- approve/dismiss decisions are persisted in `operator_actions`
+
+### Demo sequence for incidents + recommendations
+
+1. Start stack and services from **Quick Start** (ingestor, qoe-engine, agent-orchestrator, dashboard).
+2. Run a degraded scenario (for example):
+
+   ```bash
+   pnpm --filter @stream-pulse/session-simulator start -- \
+     --scenario unstable-session --events 20 --intervalMs 1000
+   ```
+
+3. Open `http://localhost:3000` and confirm:
+   - session row shows degraded/poor/critical QoE
+   - incident feed contains an open incident with severity + root cause hypothesis
+   - recommendations feed contains a pending seller-assistant recommendation with rationale and action type
+4. Click **Approve** or **Dismiss** on a pending recommendation in the dashboard.
+5. Verify persistence (optional SQL checks):
+
+   ```sql
+   SELECT id, session_id, severity, status, root_cause, started_at, updated_at
+   FROM incidents
+   ORDER BY updated_at DESC
+   LIMIT 5;
+
+   SELECT id, incident_id, agent_name, recommendation_text, action_type, priority, status, created_at
+   FROM agent_recommendations
+   ORDER BY created_at DESC
+   LIMIT 5;
+
+   SELECT recommendation_id, operator_id, decision, decided_at
+   FROM operator_actions
+   ORDER BY decided_at DESC
+   LIMIT 5;
+   ```
 
 ---
 
@@ -116,7 +156,7 @@ Expected result:
 
 ## Status
 
-🚧 **M1.5 + initial M2 QoE slice in progress**
+🚧 **M2 incident + recommendation MVP in progress**
 
 What is now runnable:
 - pnpm workspace install/build/lint/test baseline
@@ -125,10 +165,15 @@ What is now runnable:
 - ingestor with `/health` and `/telemetry`
 - session simulator package with predefined scenarios (`healthy`, `high-rtt`, `packet-loss`, `bitrate-drop`, `unstable-session`)
 - deterministic QoE engine that writes segment score + severity (`good`, `degraded`, `poor`, `critical`)
-- dashboard session/status page with lightweight polling refresh and latest QoE fields
+- deterministic anomaly detection and incident grouping into persisted incidents + timeline events
+- deterministic root-cause hypothesis placeholders (`network instability`, `bandwidth degradation`, `encoder/client performance issue`, `generalized stream degradation`)
+- first agentic recommendation workflow:
+  - Session Health Analyst deterministic incident interpretation
+  - Seller Assistant deterministic recommendation generation with action type + priority
+- recommendation persistence plus human-in-the-loop approve/dismiss persistence
+- dashboard session + incident + recommendation feed with lightweight polling refresh
 
 Still deferred for later milestones:
-- Agent orchestrator logic
 - WebRTC SDK production ingestion path
-- Incident detection/timeline and replay workflows
-- Recommendation agents and orchestration actions
+- replay timeline-focused UI
+- autonomous remediation execution against external systems

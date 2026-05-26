@@ -1,24 +1,22 @@
 {
-  "name": "@stream-pulse/qoe-engine",
+  "name": "@stream-pulse/session-simulator",
   "version": "0.0.1",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/index.js",
     "test": "vitest run --passWithNoTests",
     "lint": "echo 'Lint not configured yet'"
   },
   "dependencies": {
-    "@stream-pulse/db": "workspace:*",
-    "@stream-pulse/types": "workspace:*",
-    "@stream-pulse/event-bus": "workspace:*"
+    "@stream-pulse/types": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^20.17.10",
-    "typescript": "*",
     "tsx": "^4.19.2",
+    "typescript": "*",
     "vitest": "^2.1.8"
   }
 }

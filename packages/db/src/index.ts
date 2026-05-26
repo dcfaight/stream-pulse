@@ -34,6 +34,31 @@ export interface SessionStatusRow {
   latest_metric_value: string | null;
   latest_metric_ts: Date | null;
   metric_events_count: string;
+  latest_qoe_score: string | null;
+  latest_qoe_severity: string | null;
+  latest_qoe_end_ts: Date | null;
+}
+
+export interface ScorableSessionRow {
+  id: string;
+  latest_metric_ts: Date;
+  latest_qoe_end_ts: Date | null;
+}
+
+export interface MetricEventSampleRow {
+  ts: Date;
+  metric_type: string;
+  value: string;
+}
+
+export interface QoESegmentRow {
+  id: string;
+  session_id: string;
+  start_ts: Date;
+  end_ts: Date;
+  score: string;
+  severity: string;
+  signals: unknown;
 }
 
 function assertMigrationFile(fileName: string): void {
@@ -173,7 +198,10 @@ export async function listRecentSessionStatus(limit = 20): Promise<SessionStatus
         lm.metric_type AS latest_metric_type,
         lm.value::text AS latest_metric_value,
         lm.ts AS latest_metric_ts,
-        COUNT(me.id)::text AS metric_events_count
+        COUNT(me.id)::text AS metric_events_count,
+        lq.score::text AS latest_qoe_score,
+        lq.severity AS latest_qoe_severity,
+        lq.end_ts AS latest_qoe_end_ts
       FROM sessions s
       LEFT JOIN LATERAL (
         SELECT metric_type, value, ts
@@ -182,8 +210,25 @@ export async function listRecentSessionStatus(limit = 20): Promise<SessionStatus
         ORDER BY ts DESC
         LIMIT 1
       ) lm ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT score, severity, end_ts
+        FROM qoe_segments
+        WHERE session_id = s.id
+        ORDER BY end_ts DESC
+        LIMIT 1
+      ) lq ON TRUE
       LEFT JOIN metric_events me ON me.session_id = s.id
-      GROUP BY s.id, s.broadcaster_id, s.started_at, s.status, lm.metric_type, lm.value, lm.ts
+      GROUP BY
+        s.id,
+        s.broadcaster_id,
+        s.started_at,
+        s.status,
+        lm.metric_type,
+        lm.value,
+        lm.ts,
+        lq.score,
+        lq.severity,
+        lq.end_ts
       ORDER BY s.started_at DESC
       LIMIT $1;
     `,
@@ -191,6 +236,92 @@ export async function listRecentSessionStatus(limit = 20): Promise<SessionStatus
   );
 
   return result.rows;
+}
+
+export async function listScorableSessions(limit = 50): Promise<ScorableSessionRow[]> {
+  const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(200, Math.floor(limit))) : 50;
+  const result = await runQuery<ScorableSessionRow>(
+    `
+      SELECT
+        s.id,
+        lm.ts AS latest_metric_ts,
+        lq.end_ts AS latest_qoe_end_ts
+      FROM sessions s
+      JOIN LATERAL (
+        SELECT ts
+        FROM metric_events
+        WHERE session_id = s.id
+        ORDER BY ts DESC
+        LIMIT 1
+      ) lm ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT end_ts
+        FROM qoe_segments
+        WHERE session_id = s.id
+        ORDER BY end_ts DESC
+        LIMIT 1
+      ) lq ON TRUE
+      WHERE lq.end_ts IS NULL OR lm.ts > lq.end_ts
+      ORDER BY lm.ts DESC
+      LIMIT $1;
+    `,
+    [safeLimit],
+  );
+
+  return result.rows;
+}
+
+export async function listMetricEventsSince(
+  sessionId: string,
+  sinceTs: Date | null,
+  limit = 500,
+): Promise<MetricEventSampleRow[]> {
+  const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(2000, Math.floor(limit))) : 500;
+  const result = await runQuery<MetricEventSampleRow>(
+    `
+      SELECT ts, metric_type, value::text AS value
+      FROM metric_events
+      WHERE session_id = $1
+        AND ($2::timestamptz IS NULL OR ts > $2)
+      ORDER BY ts ASC
+      LIMIT $3;
+    `,
+    [sessionId, sinceTs, safeLimit],
+  );
+
+  return result.rows;
+}
+
+export async function insertQoeSegment(input: {
+  sessionId: string;
+  startTs: Date;
+  endTs: Date;
+  score: number;
+  severity: string;
+  signals: Record<string, number>;
+}): Promise<QoESegmentRow> {
+  const result = await runQuery<QoESegmentRow>(
+    `
+      INSERT INTO qoe_segments (session_id, start_ts, end_ts, score, severity, signals)
+      VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+      RETURNING id, session_id, start_ts, end_ts, score::text AS score, severity, signals;
+    `,
+    [
+      input.sessionId,
+      input.startTs,
+      input.endTs,
+      input.score,
+      input.severity,
+      JSON.stringify(input.signals),
+    ],
+  );
+
+  const qoeSegment = result.rows[0];
+  if (!qoeSegment) {
+    throw new Error('Failed to create QoE segment');
+  }
+
+  return qoeSegment;
 }
 
 export { getDbPool } from './client.js';

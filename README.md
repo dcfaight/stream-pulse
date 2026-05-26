@@ -46,7 +46,7 @@ StreamPulse is a real-time media control plane — not a livestream platform. It
 
 ---
 
-## Quick Start (M1 Runnable Foundation Slice)
+## Quick Start (M1.5 + First M2 QoE Slice)
 
 ```bash
 # Prerequisites: Node 20+, pnpm 9+, Docker
@@ -69,30 +69,38 @@ pnpm --filter @stream-pulse/db migrate
 # Start ingestor (http://localhost:4001)
 pnpm --filter @stream-pulse/ingestor dev
 
+# In another terminal start QoE engine (polls DB and writes qoe_segments)
+pnpm --filter @stream-pulse/qoe-engine dev
+
 # In another terminal start dashboard (http://localhost:3000)
 pnpm --filter @stream-pulse/dashboard dev
 ```
 
 ---
 
-## Synthetic Telemetry Proof (End-to-End)
+## Synthetic Telemetry Demo (End-to-End)
 
-Send one synthetic telemetry event to ingestor:
+Run the session simulator with named scenarios:
 
 ```bash
-curl -X POST http://localhost:4001/telemetry \
-  -H "Content-Type: application/json" \
-  -d '{
-    "broadcasterId":"demo-broadcaster",
-    "metricType":"rtt_ms",
-    "value":87.5
-  }'
+# healthy baseline scenario
+pnpm --filter @stream-pulse/session-simulator start -- \
+  --scenario healthy --events 20 --intervalMs 1000
+
+# degraded high latency scenario
+pnpm --filter @stream-pulse/session-simulator start -- \
+  --scenario high-rtt --events 20 --intervalMs 1000
+
+# unstable quality scenario
+pnpm --filter @stream-pulse/session-simulator start -- \
+  --scenario unstable-session --events 20 --intervalMs 1000
 ```
 
 Expected result:
 - `GET http://localhost:4001/health` returns `{ "status": "ok", "service": "ingestor" }`
-- `POST /telemetry` returns `sessionId` + `eventId`
-- Dashboard home page shows the inserted session/event row from Postgres
+- simulator posts telemetry events to `POST /telemetry`
+- QoE engine creates `qoe_segments` rows for those sessions
+- dashboard home page refreshes every 5 seconds and shows latest metric + QoE score + severity
 
 ---
 
@@ -108,17 +116,19 @@ Expected result:
 
 ## Status
 
-🚧 **M1 foundation slice in progress**
+🚧 **M1.5 + initial M2 QoE slice in progress**
 
 What is now runnable:
 - pnpm workspace install/build/lint/test baseline
 - local Postgres + Redis via Docker Compose
 - migration runner in `packages/db`
 - ingestor with `/health` and `/telemetry`
-- dashboard session/status page backed by Postgres data
+- session simulator package with predefined scenarios (`healthy`, `high-rtt`, `packet-loss`, `bitrate-drop`, `unstable-session`)
+- deterministic QoE engine that writes segment score + severity (`good`, `degraded`, `poor`, `critical`)
+- dashboard session/status page with lightweight polling refresh and latest QoE fields
 
 Still deferred for later milestones:
-- QoE scoring engine logic
 - Agent orchestrator logic
 - WebRTC SDK production ingestion path
-- Incident replay and live stream updates
+- Incident detection/timeline and replay workflows
+- Recommendation agents and orchestration actions

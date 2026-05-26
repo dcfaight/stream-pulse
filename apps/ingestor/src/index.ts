@@ -13,6 +13,11 @@ interface TelemetryRequestBody {
   rawPayload?: Partial<StatSnapshot>;
 }
 
+interface ValidTelemetryRequestBody extends TelemetryRequestBody {
+  metricType: MetricType;
+  value: number;
+}
+
 const port = Number(process.env.INGESTOR_PORT ?? 4001);
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -33,7 +38,7 @@ async function parseJsonBody(request: IncomingMessage): Promise<unknown> {
   return JSON.parse(raw);
 }
 
-function validateBody(body: unknown): TelemetryRequestBody {
+function validateBody(body: unknown): ValidTelemetryRequestBody {
   if (!body || typeof body !== 'object') {
     throw new Error('JSON body is required');
   }
@@ -44,7 +49,7 @@ function validateBody(body: unknown): TelemetryRequestBody {
     throw new Error('value must be a number');
   }
 
-  return candidate;
+  return candidate as ValidTelemetryRequestBody;
 }
 
 const server = createServer(async (request, response) => {

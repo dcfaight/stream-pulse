@@ -16,6 +16,7 @@
     "@stream-pulse/event-bus": "workspace:*"
   },
   "devDependencies": {
+    "@types/node": "^20.17.10",
     "typescript": "*",
     "tsx": "^4.19.2",
     "vitest": "^2.1.8"

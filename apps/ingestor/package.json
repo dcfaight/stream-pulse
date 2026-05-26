@@ -7,14 +7,16 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
-    "test": "vitest run",
+    "test": "vitest run --passWithNoTests",
     "lint": "echo 'Lint not configured yet'"
   },
   "dependencies": {
+    "@stream-pulse/db": "workspace:*",
     "@stream-pulse/types": "workspace:*",
     "@stream-pulse/event-bus": "workspace:*"
   },
   "devDependencies": {
+    "@types/node": "^20.17.10",
     "typescript": "*",
     "tsx": "^4.19.2",
     "vitest": "^2.1.8"

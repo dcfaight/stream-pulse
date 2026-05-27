@@ -625,6 +625,12 @@ export async function createRecommendation(input: {
   confidence: number;
   triggerSignals: Record<string, number>;
   dedupeKey?: string;
+  summary?: {
+    oneLineSummary: string;
+    whySummary: string;
+    confidenceSummary: string;
+    incidentLinkageSummary: string;
+  };
 }): Promise<{ recommendation: RecommendationRow; deduped: boolean; supersededIds: string[] }> {
   const dedupeKey =
     input.dedupeKey ??
@@ -764,6 +770,7 @@ export async function createRecommendation(input: {
           priority: input.priority,
           confidence: input.confidence,
           dedupeKey,
+          summary: input.summary ?? null,
         }),
       ],
     );

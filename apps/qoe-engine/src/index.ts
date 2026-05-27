@@ -26,6 +26,12 @@ interface AnomalySignal {
   reason: string;
 }
 
+interface IncidentSummary {
+  oneLineSummary: string;
+  rootCauseHypothesis: string;
+  supportingSignalsSummary: string;
+}
+
 function round(value: number): number {
   return Math.round(value * 100) / 100;
 }
@@ -176,6 +182,38 @@ function pickRootCause(
   return { hypothesis: 'generalized stream degradation', confidence: 0.62 };
 }
 
+function formatSignalsSummary(signals: Record<string, number>): string {
+  const candidates = [
+    ['avg_rtt_ms', 'RTT', 'ms'],
+    ['avg_packet_loss_pct', 'packet loss', '%'],
+    ['avg_jitter_ms', 'jitter', 'ms'],
+    ['avg_bitrate_video_kbps', 'video bitrate', 'kbps'],
+    ['avg_frame_drops_per_sec', 'frame drops', '/s'],
+    ['score', 'QoE score', ''],
+  ] as const;
+
+  const parts = candidates
+    .filter(([key]) => typeof signals[key] === 'number')
+    .slice(0, 4)
+    .map(([key, label, suffix]) => `${label}=${signals[key]}${suffix}`);
+
+  return parts.length > 0 ? parts.join(', ') : 'limited supporting signals';
+}
+
+function buildIncidentSummary(input: {
+  qoeSeverity: Severity;
+  incidentSeverity: Severity;
+  hypothesis: string;
+  confidence: number;
+  signals: Record<string, number>;
+}): IncidentSummary {
+  const confidencePct = Math.round(input.confidence * 100);
+  const rootCauseHypothesis = `${input.hypothesis} (${confidencePct}% confidence)`;
+  const supportingSignalsSummary = formatSignalsSummary(input.signals);
+  const oneLineSummary = `Session degradation detected: incident ${input.incidentSeverity} with QoE ${input.qoeSeverity}; likely ${input.hypothesis}.`;
+  return { oneLineSummary, rootCauseHypothesis, supportingSignalsSummary };
+}
+
 async function detectAndPersistIncident(input: {
   sessionId: string;
   startTs: Date;
@@ -214,6 +252,13 @@ async function detectAndPersistIncident(input: {
         incidentSeverity,
         rootCauseHypothesis: hypothesis,
         confidence,
+        ...buildIncidentSummary({
+          qoeSeverity: input.qoeSeverity,
+          incidentSeverity,
+          hypothesis,
+          confidence,
+          signals: input.signals,
+        }),
         anomalies,
         signals: input.signals,
       },
@@ -232,6 +277,13 @@ async function detectAndPersistIncident(input: {
 
   const mergedSeverity = maxSeverity(existingIncident.severity as Severity, incidentSeverity);
   const mergedConfidence = Math.max(Number(existingIncident.confidence), confidence);
+  const incidentSummary = buildIncidentSummary({
+    qoeSeverity: input.qoeSeverity,
+    incidentSeverity: mergedSeverity,
+    hypothesis,
+    confidence: mergedConfidence,
+    signals: input.signals,
+  });
   await updateIncident({
     incidentId: existingIncident.id,
     updatedAt: input.endTs,
@@ -249,6 +301,7 @@ async function detectAndPersistIncident(input: {
       incidentSeverity: mergedSeverity,
       rootCauseHypothesis: hypothesis,
       confidence: mergedConfidence,
+      ...incidentSummary,
       anomalies,
       signals: input.signals,
     },

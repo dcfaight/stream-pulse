@@ -28,7 +28,7 @@ interface AnomalySignal {
 
 interface IncidentSummary {
   oneLineSummary: string;
-  rootCauseHypothesis: string;
+  rootCauseSummary: string;
   supportingSignalsSummary: string;
 }
 
@@ -208,10 +208,10 @@ function buildIncidentSummary(input: {
   signals: Record<string, number>;
 }): IncidentSummary {
   const confidencePct = Math.round(input.confidence * 100);
-  const rootCauseHypothesis = `${input.hypothesis} (${confidencePct}% confidence)`;
+  const rootCauseSummary = `${input.hypothesis} (${confidencePct}% confidence)`;
   const supportingSignalsSummary = formatSignalsSummary(input.signals);
   const oneLineSummary = `Session degradation detected: incident ${input.incidentSeverity} with QoE ${input.qoeSeverity}; likely ${input.hypothesis}.`;
-  return { oneLineSummary, rootCauseHypothesis, supportingSignalsSummary };
+  return { oneLineSummary, rootCauseSummary, supportingSignalsSummary };
 }
 
 async function detectAndPersistIncident(input: {

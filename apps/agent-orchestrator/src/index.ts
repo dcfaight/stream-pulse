@@ -117,22 +117,6 @@ function runSellerAssistant(
     };
   }
 
-  function buildRecommendationSummary(input: {
-    recommendation: SellerRecommendation;
-    severity: Severity;
-    rootCause: string;
-    confidence: number;
-    incidentId: string;
-    sessionId: string;
-  }): RecommendationSummary {
-    const confidencePct = Math.round(input.confidence * 100);
-    return {
-      oneLineSummary: `${input.recommendation.actionType} (${input.recommendation.priority}) for ${input.severity} incident.`,
-      whySummary: `Recommended because incident points to ${input.rootCause}.`,
-      confidenceSummary: `${confidencePct}% confidence based on deterministic severity, root-cause, and signal weighting.`,
-      incidentLinkageSummary: `Linked to incident ${input.incidentId} on session ${input.sessionId}.`,
-    };
-  }
   if (rootCause === 'bandwidth degradation') {
     return {
       recommendationText: `Ask broadcaster ${broadcasterId} to lower outbound quality preset and pause background traffic.`,
@@ -141,6 +125,7 @@ function runSellerAssistant(
       priority: summary.severity === 'critical' ? 'high' : 'medium',
     };
   }
+
   if (rootCause === 'encoder/client performance issue') {
     return {
       recommendationText: `Prompt broadcaster ${broadcasterId} to reduce local CPU load and restart capture software if frame drops continue.`,
@@ -155,6 +140,23 @@ function runSellerAssistant(
     rationale: `${summary.interpretation} No dominant root cause detected, so use a broad mitigation checklist and close monitoring.`,
     actionType: 'general-health-check',
     priority: summary.severity === 'critical' ? 'high' : summary.severity === 'poor' ? 'medium' : 'low',
+  };
+}
+
+function buildRecommendationSummary(input: {
+  recommendation: SellerRecommendation;
+  severity: Severity;
+  rootCause: string;
+  confidence: number;
+  incidentId: string;
+  sessionId: string;
+}): RecommendationSummary {
+  const confidencePct = Math.round(input.confidence * 100);
+  return {
+    oneLineSummary: `${input.recommendation.actionType} (${input.recommendation.priority}) for ${input.severity} incident.`,
+    whySummary: `Recommended because incident points to ${input.rootCause}.`,
+    confidenceSummary: `${confidencePct}% confidence based on deterministic severity, root-cause, and signal weighting.`,
+    incidentLinkageSummary: `Linked to incident ${input.incidentId} on session ${input.sessionId}.`,
   };
 }
 

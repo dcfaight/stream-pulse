@@ -53,8 +53,10 @@ function buildIncidentOperatorSummary(incident: IncidentFeedRow): {
       ? payload.oneLineSummary
       : `Incident ${incident.severity} for session ${incident.session_id}.`;
   const rootCause =
-    typeof payload?.rootCauseHypothesis === 'string'
-      ? payload.rootCauseHypothesis
+    typeof payload?.rootCauseSummary === 'string'
+      ? payload.rootCauseSummary
+      : typeof payload?.rootCauseHypothesis === 'string'
+        ? payload.rootCauseHypothesis
       : incident.root_cause || 'generalized stream degradation';
   const supportingSignals =
     typeof payload?.supportingSignalsSummary === 'string'

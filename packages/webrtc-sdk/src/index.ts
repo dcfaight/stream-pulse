@@ -12,6 +12,13 @@ interface SessionClientConfig {
   broadcasterId: string;
 }
 
+interface MinimalRemoteInboundVideoStats extends RTCStats {
+  packetsLost?: number;
+  fractionLost?: number;
+  roundTripTime?: number;
+  jitter?: number;
+}
+
 export interface SessionClientOptions {
   intervalMs?: number;
   ingestorUrl?: string;
@@ -61,24 +68,43 @@ function toMsFromSeconds(value: number | undefined): number | undefined {
   return value * 1000;
 }
 
+function reportEntries(report: RTCStatsReport): RTCStats[] {
+  const iterable = report as unknown as { values?: () => IterableIterator<RTCStats> };
+  if (typeof iterable.values === 'function') {
+    return Array.from(iterable.values());
+  }
+  const keyed = report as unknown as Record<string, RTCStats>;
+  return Object.values(keyed).filter(
+    (value): value is RTCStats =>
+      Boolean(value && typeof value === 'object' && typeof (value as RTCStats).type === 'string'),
+  );
+}
+
+function reportGet(report: RTCStatsReport, id: string): RTCStats | undefined {
+  const keyed = report as unknown as { get?: (key: string) => RTCStats | undefined };
+  if (typeof keyed.get === 'function') return keyed.get(id);
+  const fallback = report as unknown as Record<string, RTCStats | undefined>;
+  return fallback[id];
+}
+
 function asStat<T extends RTCStats>(report: RTCStatsReport, id: string | undefined): T | undefined {
   if (!id) return undefined;
-  const value = report.get(id);
+  const value = reportGet(report, id);
   return value as T | undefined;
 }
 
 function pickVideoStats(report: RTCStatsReport): {
   outboundVideo?: RTCOutboundRtpStreamStats;
   inboundVideo?: RTCInboundRtpStreamStats;
-  remoteInboundVideo?: RTCRemoteInboundRtpStreamStats;
+  remoteInboundVideo?: MinimalRemoteInboundVideoStats;
   candidatePair?: RTCIceCandidatePairStats;
 } {
   let outboundVideo: RTCOutboundRtpStreamStats | undefined;
   let inboundVideo: RTCInboundRtpStreamStats | undefined;
-  let remoteInboundVideo: RTCRemoteInboundRtpStreamStats | undefined;
+  let remoteInboundVideo: MinimalRemoteInboundVideoStats | undefined;
   let candidatePair: RTCIceCandidatePairStats | undefined;
 
-  for (const stat of report.values()) {
+  for (const stat of reportEntries(report)) {
     if (
       !outboundVideo &&
       stat.type === 'outbound-rtp' &&
@@ -107,7 +133,7 @@ function pickVideoStats(report: RTCStatsReport): {
   }
 
   if (outboundVideo) {
-    remoteInboundVideo = asStat<RTCRemoteInboundRtpStreamStats>(report, outboundVideo.remoteId);
+    remoteInboundVideo = asStat<MinimalRemoteInboundVideoStats>(report, outboundVideo.remoteId);
   }
 
   return { outboundVideo, inboundVideo, remoteInboundVideo, candidatePair };
@@ -229,7 +255,10 @@ export function createSessionClient(
         });
       }
 
-      const frameDrops = toFinite(selected.outboundVideo?.framesDropped ?? selected.inboundVideo?.framesDropped);
+      const frameDrops = toFinite(
+        (selected.outboundVideo as { framesDropped?: number } | undefined)?.framesDropped ??
+          selected.inboundVideo?.framesDropped,
+      );
       if (typeof frameDrops === 'number') snapshot.frameDrops = frameDrops;
       if (previous && typeof frameDrops === 'number' && now > previous.ts && previous.frameDrops != null) {
         const elapsedSeconds = (now - previous.ts) / 1000;

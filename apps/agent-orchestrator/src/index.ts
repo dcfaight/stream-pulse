@@ -1,4 +1,5 @@
 import {
+  buildRecommendationDedupeKey,
   createRecommendation,
   insertIncidentTimelineEntry,
   listIncidentsForRecommendation,
@@ -18,6 +19,38 @@ interface SellerRecommendation {
   rationale: string;
   actionType: string;
   priority: 'low' | 'medium' | 'high' | 'critical';
+}
+
+function clampScore(value: number): number {
+  return Math.max(0, Math.min(1, Math.round(value * 100) / 100));
+}
+
+function recommendationConfidenceScore(input: {
+  severity: Severity;
+  rootCause: string;
+  supportingSignals: Record<string, number>;
+  incidentConfidence: number;
+}): number {
+  const signalCount = Object.keys(input.supportingSignals).filter((key) => key !== 'event_count').length;
+  const signalScore = Math.min(0.25, signalCount * 0.05);
+  const severityScore =
+    input.severity === 'critical'
+      ? 0.3
+      : input.severity === 'poor'
+        ? 0.23
+        : input.severity === 'degraded'
+          ? 0.16
+          : 0.08;
+  const rootCauseScore =
+    input.rootCause === 'network instability'
+      ? 0.2
+      : input.rootCause === 'bandwidth degradation'
+        ? 0.17
+        : input.rootCause === 'encoder/client performance issue'
+          ? 0.14
+          : 0.1;
+  const incidentConfidenceScore = Math.max(0, Math.min(0.25, input.incidentConfidence * 0.25));
+  return clampScore(0.2 + signalScore + severityScore + rootCauseScore + incidentConfidenceScore);
 }
 
 function toSeverity(value: string | null): Severity {
@@ -110,6 +143,19 @@ async function processIncidentsOnce(): Promise<void> {
     const signals = parseSignals(incident.latest_event_payload);
     const analystSummary = runSessionHealthAnalyst(severity, rootCause, signals);
     const sellerRecommendation = runSellerAssistant(analystSummary, rootCause, broadcasterId);
+    const incidentConfidence = Number(incident.confidence ?? 0);
+    const recommendationConfidence = recommendationConfidenceScore({
+      severity,
+      rootCause,
+      supportingSignals: analystSummary.supportingSignals,
+      incidentConfidence: Number.isFinite(incidentConfidence) ? incidentConfidence : 0,
+    });
+    const dedupeKey = buildRecommendationDedupeKey({
+      incidentId: incident.id,
+      actionType: sellerRecommendation.actionType,
+      recommendationText: sellerRecommendation.recommendationText,
+      rationale: sellerRecommendation.rationale,
+    });
 
     await insertIncidentTimelineEntry({
       incidentId: incident.id,
@@ -122,19 +168,26 @@ async function processIncidentsOnce(): Promise<void> {
       },
     });
 
-    await createRecommendation({
+    const recommendationResult = await createRecommendation({
       incidentId: incident.id,
       agentName: 'seller-assistant',
       recommendationText: sellerRecommendation.recommendationText,
       rationale: sellerRecommendation.rationale,
       actionType: sellerRecommendation.actionType,
       priority: sellerRecommendation.priority,
+      confidence: recommendationConfidence,
       triggerSignals: analystSummary.supportingSignals,
+      dedupeKey,
     });
-
-    console.log(
-      `Recommendation created for incident ${incident.id}: action=${sellerRecommendation.actionType} priority=${sellerRecommendation.priority}`,
-    );
+    if (recommendationResult.deduped) {
+      console.log(
+        `Recommendation deduped for incident ${incident.id}: existing=${recommendationResult.recommendation.id}`,
+      );
+    } else {
+      console.log(
+        `Recommendation created for incident ${incident.id}: action=${sellerRecommendation.actionType} priority=${sellerRecommendation.priority} confidence=${recommendationConfidence}`,
+      );
+    }
   }
 }
 

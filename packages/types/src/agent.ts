@@ -1,4 +1,4 @@
-export type RecommendationStatus = 'pending' | 'approved' | 'dismissed' | 'applied';
+export type RecommendationStatus = 'pending' | 'approved' | 'dismissed' | 'superseded' | 'applied';
 export type OperatorDecision = 'approve' | 'dismiss';
 
 export interface AgentTrigger {
@@ -28,6 +28,7 @@ export interface Recommendation {
   status: RecommendationStatus;
   triggerSignals: Record<string, number>;
   priority: AgentResult['priority'];
+  confidence: number;
 }
 
 export interface OperatorAction {

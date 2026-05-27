@@ -86,6 +86,8 @@ export interface IncidentFeedRow extends IncidentRow {
   latest_event_ts: Date | null;
   latest_event_type: string | null;
   latest_event_payload: unknown;
+  recommendation_count: string;
+  active_recommendation_count: string;
 }
 
 export interface RecommendationRow {
@@ -99,15 +101,60 @@ export interface RecommendationRow {
   priority: string;
   status: string;
   trigger_signals: unknown;
+  confidence: string;
+  dedupe_key: string | null;
+  superseded_by: string | null;
+  decided_at: Date | null;
+  decided_by: string | null;
 }
 
 export interface RecommendationFeedRow extends RecommendationRow {
   session_id: string | null;
+  incident_status: string | null;
   incident_severity: string | null;
   incident_root_cause: string | null;
   latest_decision: string | null;
   latest_operator_id: string | null;
   latest_decided_at: Date | null;
+}
+
+export interface SessionReplayTimelineEventRow {
+  ts: Date;
+  event_type: string;
+  source: string;
+  session_id: string;
+  incident_id: string | null;
+  recommendation_id: string | null;
+  severity: string | null;
+  status: string | null;
+  root_cause: string | null;
+  confidence: string | null;
+  action_type: string | null;
+  priority: string | null;
+  operator_id: string | null;
+  decision: string | null;
+  qoe_score: string | null;
+  qoe_severity: string | null;
+  payload: unknown;
+}
+
+function normalizeForDedupe(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .slice(0, 180);
+}
+
+export function buildRecommendationDedupeKey(input: {
+  incidentId: string;
+  actionType: string;
+  recommendationText: string;
+  rationale: string;
+}): string {
+  const normalizedText = normalizeForDedupe(input.recommendationText);
+  const normalizedRationale = normalizeForDedupe(input.rationale);
+  return `${input.incidentId}|${input.actionType}|${normalizedText}|${normalizedRationale}`;
 }
 
 function assertMigrationFile(fileName: string): void {
@@ -483,7 +530,9 @@ export async function listRecentIncidents(limit = 25): Promise<IncidentFeedRow[]
         s.broadcaster_id,
         lt.ts AS latest_event_ts,
         lt.event_type AS latest_event_type,
-        lt.payload AS latest_event_payload
+        lt.payload AS latest_event_payload,
+        COALESCE(rec.total_count, 0)::text AS recommendation_count,
+        COALESCE(rec.active_count, 0)::text AS active_recommendation_count
       FROM incidents i
       JOIN sessions s ON s.id = i.session_id
       LEFT JOIN LATERAL (
@@ -493,6 +542,13 @@ export async function listRecentIncidents(limit = 25): Promise<IncidentFeedRow[]
         ORDER BY ts DESC
         LIMIT 1
       ) lt ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT
+          COUNT(*) AS total_count,
+          COUNT(*) FILTER (WHERE status = 'pending') AS active_count
+        FROM agent_recommendations
+        WHERE incident_id = i.id
+      ) rec ON TRUE
       ORDER BY i.updated_at DESC
       LIMIT $1;
     `,
@@ -519,7 +575,9 @@ export async function listIncidentsForRecommendation(limit = 25): Promise<Incide
         s.broadcaster_id,
         lt.ts AS latest_event_ts,
         lt.event_type AS latest_event_type,
-        lt.payload AS latest_event_payload
+        lt.payload AS latest_event_payload,
+        COALESCE(rec.total_count, 0)::text AS recommendation_count,
+        COALESCE(rec.active_count, 0)::text AS active_recommendation_count
       FROM incidents i
       JOIN sessions s ON s.id = i.session_id
       JOIN LATERAL (
@@ -529,6 +587,13 @@ export async function listIncidentsForRecommendation(limit = 25): Promise<Incide
         ORDER BY ts DESC
         LIMIT 1
       ) lt ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT
+          COUNT(*) AS total_count,
+          COUNT(*) FILTER (WHERE status = 'pending') AS active_count
+        FROM agent_recommendations
+        WHERE incident_id = i.id
+      ) rec ON TRUE
       WHERE i.status = 'open'
         AND NOT EXISTS (
           SELECT 1
@@ -557,51 +622,187 @@ export async function createRecommendation(input: {
   rationale: string;
   actionType: string;
   priority: string;
+  confidence: number;
   triggerSignals: Record<string, number>;
-}): Promise<RecommendationRow> {
-  const result = await runQuery<RecommendationRow>(
-    `
-      INSERT INTO agent_recommendations (
-        incident_id,
-        agent_name,
-        recommendation_text,
-        rationale,
-        action_type,
-        priority,
-        status,
-        trigger_signals
-      )
-      VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7::jsonb)
-      RETURNING
-        id,
-        incident_id,
-        agent_name,
-        created_at,
-        recommendation_text,
-        rationale,
-        action_type,
-        priority,
-        status,
-        trigger_signals;
-    `,
-    [
-      input.incidentId,
-      input.agentName,
-      input.recommendationText,
-      input.rationale,
-      input.actionType,
-      input.priority,
-      JSON.stringify(input.triggerSignals),
-    ],
-  );
-  const recommendation = result.rows[0];
-  if (!recommendation) {
-    throw new Error('Failed to create recommendation');
+  dedupeKey?: string;
+}): Promise<{ recommendation: RecommendationRow; deduped: boolean; supersededIds: string[] }> {
+  const dedupeKey =
+    input.dedupeKey ??
+    buildRecommendationDedupeKey({
+      incidentId: input.incidentId,
+      actionType: input.actionType,
+      recommendationText: input.recommendationText,
+      rationale: input.rationale,
+    });
+
+  const client = await getDbPool().connect();
+  try {
+    await client.query('BEGIN');
+
+    const duplicateResult = await client.query<RecommendationRow>(
+      `
+        SELECT
+          id,
+          incident_id,
+          agent_name,
+          created_at,
+          recommendation_text,
+          rationale,
+          action_type,
+          priority,
+          status,
+          trigger_signals,
+          confidence::text AS confidence,
+          dedupe_key,
+          superseded_by,
+          decided_at,
+          decided_by
+        FROM agent_recommendations
+        WHERE status = 'pending'
+          AND dedupe_key = $1
+        ORDER BY created_at DESC
+        LIMIT 1;
+      `,
+      [dedupeKey],
+    );
+    const duplicate = duplicateResult.rows[0];
+    if (duplicate) {
+      await client.query(
+        `
+          INSERT INTO incident_timeline (incident_id, ts, event_type, payload)
+          VALUES ($1, now(), 'recommendation_deduped', $2::jsonb);
+        `,
+        [
+          input.incidentId,
+          JSON.stringify({
+            existingRecommendationId: duplicate.id,
+            dedupeKey,
+            actionType: duplicate.action_type,
+            status: duplicate.status,
+          }),
+        ],
+      );
+      await client.query('COMMIT');
+      return { recommendation: duplicate, deduped: true, supersededIds: [] };
+    }
+
+    const insertResult = await client.query<RecommendationRow>(
+      `
+        INSERT INTO agent_recommendations (
+          incident_id,
+          agent_name,
+          recommendation_text,
+          rationale,
+          action_type,
+          priority,
+          confidence,
+          dedupe_key,
+          status,
+          trigger_signals
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending', $9::jsonb)
+        RETURNING
+          id,
+          incident_id,
+          agent_name,
+          created_at,
+          recommendation_text,
+          rationale,
+          action_type,
+          priority,
+          status,
+          trigger_signals,
+          confidence::text AS confidence,
+          dedupe_key,
+          superseded_by,
+          decided_at,
+          decided_by;
+      `,
+      [
+        input.incidentId,
+        input.agentName,
+        input.recommendationText,
+        input.rationale,
+        input.actionType,
+        input.priority,
+        input.confidence,
+        dedupeKey,
+        JSON.stringify(input.triggerSignals),
+      ],
+    );
+    const recommendation = insertResult.rows[0];
+    if (!recommendation) {
+      throw new Error('Failed to create recommendation');
+    }
+
+    const supersededResult = await client.query<{ id: string }>(
+      `
+        UPDATE agent_recommendations
+        SET status = 'superseded',
+            superseded_by = $1
+        WHERE incident_id = $2
+          AND action_type = $3
+          AND status = 'pending'
+          AND id <> $1
+        RETURNING id;
+      `,
+      [recommendation.id, input.incidentId, input.actionType],
+    );
+
+    await client.query(
+      `
+        INSERT INTO incident_timeline (incident_id, ts, event_type, payload)
+        VALUES ($1, $2, 'recommendation_created', $3::jsonb);
+      `,
+      [
+        input.incidentId,
+        recommendation.created_at,
+        JSON.stringify({
+          recommendationId: recommendation.id,
+          agentName: input.agentName,
+          actionType: input.actionType,
+          priority: input.priority,
+          confidence: input.confidence,
+          dedupeKey,
+        }),
+      ],
+    );
+
+    for (const supersededId of supersededResult.rows.map((row) => row.id)) {
+      await client.query(
+        `
+          INSERT INTO incident_timeline (incident_id, ts, event_type, payload)
+          VALUES ($1, now(), 'recommendation_superseded', $2::jsonb);
+        `,
+        [
+          input.incidentId,
+          JSON.stringify({
+            supersededRecommendationId: supersededId,
+            supersededByRecommendationId: recommendation.id,
+            actionType: input.actionType,
+          }),
+        ],
+      );
+    }
+
+    await client.query('COMMIT');
+    return {
+      recommendation,
+      deduped: false,
+      supersededIds: supersededResult.rows.map((row) => row.id),
+    };
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
   }
-  return recommendation;
 }
 
-export async function listRecentRecommendations(limit = 25): Promise<RecommendationFeedRow[]> {
+export async function listRecentRecommendations(
+  limit = 25,
+  sessionId?: string,
+): Promise<RecommendationFeedRow[]> {
   const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(100, Math.floor(limit))) : 25;
   const result = await runQuery<RecommendationFeedRow>(
     `
@@ -616,7 +817,13 @@ export async function listRecentRecommendations(limit = 25): Promise<Recommendat
         r.priority,
         r.status,
         r.trigger_signals,
+        r.confidence::text AS confidence,
+        r.dedupe_key,
+        r.superseded_by,
+        r.decided_at,
+        r.decided_by,
         i.session_id,
+        i.status AS incident_status,
         i.severity AS incident_severity,
         i.root_cause AS incident_root_cause,
         oa.decision AS latest_decision,
@@ -631,12 +838,220 @@ export async function listRecentRecommendations(limit = 25): Promise<Recommendat
         ORDER BY decided_at DESC
         LIMIT 1
       ) oa ON TRUE
+      WHERE ($2::uuid IS NULL OR i.session_id = $2)
       ORDER BY r.created_at DESC
       LIMIT $1;
     `,
-    [safeLimit],
+    [safeLimit, sessionId ?? null],
   );
 
+  return result.rows;
+}
+
+export async function listSessionIncidents(
+  sessionId: string,
+  limit = 50,
+): Promise<IncidentFeedRow[]> {
+  const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(200, Math.floor(limit))) : 50;
+  const result = await runQuery<IncidentFeedRow>(
+    `
+      SELECT
+        i.id,
+        i.session_id,
+        i.started_at,
+        i.resolved_at,
+        i.status,
+        i.root_cause,
+        i.confidence::text AS confidence,
+        i.severity,
+        i.updated_at,
+        s.broadcaster_id,
+        lt.ts AS latest_event_ts,
+        lt.event_type AS latest_event_type,
+        lt.payload AS latest_event_payload,
+        COALESCE(rec.total_count, 0)::text AS recommendation_count,
+        COALESCE(rec.active_count, 0)::text AS active_recommendation_count
+      FROM incidents i
+      JOIN sessions s ON s.id = i.session_id
+      LEFT JOIN LATERAL (
+        SELECT ts, event_type, payload
+        FROM incident_timeline
+        WHERE incident_id = i.id
+        ORDER BY ts DESC
+        LIMIT 1
+      ) lt ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT
+          COUNT(*) AS total_count,
+          COUNT(*) FILTER (WHERE status = 'pending') AS active_count
+        FROM agent_recommendations
+        WHERE incident_id = i.id
+      ) rec ON TRUE
+      WHERE i.session_id = $1
+      ORDER BY i.updated_at DESC
+      LIMIT $2;
+    `,
+    [sessionId, safeLimit],
+  );
+
+  return result.rows;
+}
+
+export async function listSessionQoeTrend(
+  sessionId: string,
+  limit = 120,
+): Promise<QoESegmentRow[]> {
+  const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(400, Math.floor(limit))) : 120;
+  const result = await runQuery<QoESegmentRow>(
+    `
+      SELECT id, session_id, start_ts, end_ts, score::text AS score, severity, signals
+      FROM qoe_segments
+      WHERE session_id = $1
+      ORDER BY end_ts ASC
+      LIMIT $2;
+    `,
+    [sessionId, safeLimit],
+  );
+  return result.rows;
+}
+
+export async function listSessionReplayTimeline(
+  sessionId: string,
+  limit = 250,
+): Promise<SessionReplayTimelineEventRow[]> {
+  const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(1000, Math.floor(limit))) : 250;
+  const result = await runQuery<SessionReplayTimelineEventRow>(
+    `
+      WITH session_incidents AS (
+        SELECT id, session_id, severity, status, root_cause, confidence::text AS confidence
+        FROM incidents
+        WHERE session_id = $1
+      )
+      SELECT
+        timeline.ts,
+        timeline.event_type,
+        timeline.source,
+        timeline.session_id,
+        timeline.incident_id,
+        timeline.recommendation_id,
+        timeline.severity,
+        timeline.status,
+        timeline.root_cause,
+        timeline.confidence,
+        timeline.action_type,
+        timeline.priority,
+        timeline.operator_id,
+        timeline.decision,
+        timeline.qoe_score,
+        timeline.qoe_severity,
+        timeline.payload
+      FROM (
+        SELECT
+          q.end_ts AS ts,
+          'qoe_segment_created'::text AS event_type,
+          'qoe'::text AS source,
+          q.session_id,
+          NULL::uuid AS incident_id,
+          NULL::uuid AS recommendation_id,
+          q.severity AS severity,
+          NULL::text AS status,
+          NULL::text AS root_cause,
+          NULL::text AS confidence,
+          NULL::text AS action_type,
+          NULL::text AS priority,
+          NULL::text AS operator_id,
+          NULL::text AS decision,
+          q.score::text AS qoe_score,
+          q.severity AS qoe_severity,
+          q.signals AS payload
+        FROM qoe_segments q
+        WHERE q.session_id = $1
+
+        UNION ALL
+
+        SELECT
+          t.ts,
+          t.event_type,
+          'incident_timeline'::text AS source,
+          i.session_id,
+          t.incident_id,
+          NULL::uuid AS recommendation_id,
+          i.severity,
+          i.status,
+          i.root_cause,
+          i.confidence,
+          NULL::text AS action_type,
+          NULL::text AS priority,
+          NULL::text AS operator_id,
+          NULL::text AS decision,
+          NULL::text AS qoe_score,
+          NULL::text AS qoe_severity,
+          t.payload
+        FROM incident_timeline t
+        JOIN session_incidents i ON i.id = t.incident_id
+        WHERE t.event_type NOT IN ('recommendation_created', 'recommendation_decided')
+
+        UNION ALL
+
+        SELECT
+          r.created_at AS ts,
+          'recommendation_created'::text AS event_type,
+          'recommendation'::text AS source,
+          i.session_id,
+          r.incident_id,
+          r.id AS recommendation_id,
+          i.severity,
+          r.status,
+          i.root_cause,
+          r.confidence::text,
+          r.action_type,
+          r.priority,
+          NULL::text AS operator_id,
+          NULL::text AS decision,
+          NULL::text AS qoe_score,
+          NULL::text AS qoe_severity,
+          jsonb_build_object(
+            'agentName', r.agent_name,
+            'recommendationText', r.recommendation_text,
+            'rationale', r.rationale,
+            'dedupeKey', r.dedupe_key,
+            'triggerSignals', r.trigger_signals
+          ) AS payload
+        FROM agent_recommendations r
+        JOIN session_incidents i ON i.id = r.incident_id
+
+        UNION ALL
+
+        SELECT
+          oa.decided_at AS ts,
+          'recommendation_decided'::text AS event_type,
+          'operator_action'::text AS source,
+          i.session_id,
+          r.incident_id,
+          r.id AS recommendation_id,
+          i.severity,
+          r.status,
+          i.root_cause,
+          r.confidence::text,
+          r.action_type,
+          r.priority,
+          oa.operator_id,
+          oa.decision,
+          NULL::text AS qoe_score,
+          NULL::text AS qoe_severity,
+          jsonb_build_object(
+            'decision', oa.decision,
+            'notes', oa.notes
+          ) AS payload
+        FROM operator_actions oa
+        JOIN agent_recommendations r ON r.id = oa.recommendation_id
+        JOIN session_incidents i ON i.id = r.incident_id
+      ) timeline
+      ORDER BY timeline.ts ASC
+      LIMIT $2;
+    `,
+    [sessionId, safeLimit],
+  );
   return result.rows;
 }
 
@@ -650,15 +1065,24 @@ export async function decideRecommendation(input: {
   const client = await getDbPool().connect();
   try {
     await client.query('BEGIN');
-    const updateResult = await client.query<{ id: string; status: string }>(
+    const updateResult = await client.query<{
+      id: string;
+      status: string;
+      incident_id: string | null;
+      action_type: string;
+      priority: string;
+      confidence: string;
+    }>(
       `
         UPDATE agent_recommendations
-        SET status = $2
+        SET status = $2,
+            decided_at = now(),
+            decided_by = $3
         WHERE id = $1
           AND status = 'pending'
-        RETURNING id, status;
+        RETURNING id, status, incident_id, action_type, priority, confidence::text AS confidence;
       `,
-      [input.recommendationId, nextStatus],
+      [input.recommendationId, nextStatus, input.operatorId],
     );
     const recommendation = updateResult.rows[0];
     if (!recommendation) {
@@ -671,6 +1095,27 @@ export async function decideRecommendation(input: {
       `,
       [input.recommendationId, input.operatorId, input.decision, input.notes ?? null],
     );
+    if (recommendation.incident_id) {
+      await client.query(
+        `
+          INSERT INTO incident_timeline (incident_id, ts, event_type, payload)
+          VALUES ($1, now(), 'recommendation_decided', $2::jsonb);
+        `,
+        [
+          recommendation.incident_id,
+          JSON.stringify({
+            recommendationId: recommendation.id,
+            decision: input.decision,
+            nextStatus,
+            operatorId: input.operatorId,
+            actionType: recommendation.action_type,
+            priority: recommendation.priority,
+            confidence: Number(recommendation.confidence),
+            notes: input.notes ?? null,
+          }),
+        ],
+      );
+    }
     await client.query('COMMIT');
     return { recommendationId: recommendation.id, status: recommendation.status };
   } catch (error) {

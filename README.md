@@ -105,7 +105,7 @@ Expected result:
 - QoE engine creates `qoe_segments` rows for those sessions
 - deterministic anomaly/incident detection creates or updates `incidents` + `incident_timeline`
 - orchestrator creates deterministic recommendations in `agent_recommendations`
-- dashboard refreshes every 5 seconds and shows sessions, incidents, and recommendations with approve/dismiss actions
+- dashboard refreshes every 5 seconds and shows sessions, incidents, recommendations, and per-session replay timeline links
 - approve/dismiss decisions are persisted in `operator_actions`
 
 ### Demo sequence for incidents + recommendations
@@ -121,9 +121,14 @@ Expected result:
 3. Open `http://localhost:3000` and confirm:
    - session row shows degraded/poor/critical QoE
    - incident feed contains an open incident with severity + root cause hypothesis
-   - recommendations feed contains a pending seller-assistant recommendation with rationale and action type
+   - recommendations feed contains a pending seller-assistant recommendation with rationale, action type, confidence, and lifecycle status
 4. Click **Approve** or **Dismiss** on a pending recommendation in the dashboard.
-5. Verify persistence (optional SQL checks):
+5. Click **Open Timeline** on the target session row and confirm the replay page shows:
+   - chronological QoE segments
+   - incident markers (`incident_opened`, `incident_updated`, `anomaly_detected`, `agent_analysis`)
+   - recommendation lifecycle markers (`recommendation_created`, `recommendation_deduped`, `recommendation_superseded`, `recommendation_decided`)
+   - recommendation timing and operator decision timing
+6. Verify persistence (optional SQL checks):
 
    ```sql
    SELECT id, session_id, severity, status, root_cause, started_at, updated_at
@@ -131,7 +136,7 @@ Expected result:
    ORDER BY updated_at DESC
    LIMIT 5;
 
-   SELECT id, incident_id, agent_name, recommendation_text, action_type, priority, status, created_at
+   SELECT id, incident_id, agent_name, recommendation_text, action_type, priority, confidence, status, created_at, decided_at, decided_by
    FROM agent_recommendations
    ORDER BY created_at DESC
    LIMIT 5;
@@ -171,9 +176,10 @@ What is now runnable:
   - Session Health Analyst deterministic incident interpretation
   - Seller Assistant deterministic recommendation generation with action type + priority
 - recommendation persistence plus human-in-the-loop approve/dismiss persistence
+- deterministic recommendation dedupe + lifecycle states (`pending`, `approved`, `dismissed`, `superseded`)
 - dashboard session + incident + recommendation feed with lightweight polling refresh
+- session replay timeline view with chronological QoE, incident, recommendation, and operator decision events
 
 Still deferred for later milestones:
 - WebRTC SDK production ingestion path
-- replay timeline-focused UI
 - autonomous remediation execution against external systems

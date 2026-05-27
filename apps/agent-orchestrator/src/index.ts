@@ -21,6 +21,13 @@ interface SellerRecommendation {
   priority: 'low' | 'medium' | 'high' | 'critical';
 }
 
+interface RecommendationSummary {
+  oneLineSummary: string;
+  whySummary: string;
+  confidenceSummary: string;
+  incidentLinkageSummary: string;
+}
+
 function clampScore(value: number): number {
   return Math.max(0, Math.min(1, Math.round(value * 100) / 100));
 }
@@ -109,6 +116,7 @@ function runSellerAssistant(
       priority: summary.severity === 'critical' ? 'critical' : 'high',
     };
   }
+
   if (rootCause === 'bandwidth degradation') {
     return {
       recommendationText: `Ask broadcaster ${broadcasterId} to lower outbound quality preset and pause background traffic.`,
@@ -117,6 +125,7 @@ function runSellerAssistant(
       priority: summary.severity === 'critical' ? 'high' : 'medium',
     };
   }
+
   if (rootCause === 'encoder/client performance issue') {
     return {
       recommendationText: `Prompt broadcaster ${broadcasterId} to reduce local CPU load and restart capture software if frame drops continue.`,
@@ -131,6 +140,23 @@ function runSellerAssistant(
     rationale: `${summary.interpretation} No dominant root cause detected, so use a broad mitigation checklist and close monitoring.`,
     actionType: 'general-health-check',
     priority: summary.severity === 'critical' ? 'high' : summary.severity === 'poor' ? 'medium' : 'low',
+  };
+}
+
+function buildRecommendationSummary(input: {
+  recommendation: SellerRecommendation;
+  severity: Severity;
+  rootCause: string;
+  confidence: number;
+  incidentId: string;
+  sessionId: string;
+}): RecommendationSummary {
+  const confidencePct = Math.round(input.confidence * 100);
+  return {
+    oneLineSummary: `${input.recommendation.actionType} (${input.recommendation.priority}) for ${input.severity} incident.`,
+    whySummary: `Recommended because incident points to ${input.rootCause}.`,
+    confidenceSummary: `${confidencePct}% confidence based on deterministic severity, root-cause, and signal weighting.`,
+    incidentLinkageSummary: `Linked to incident ${input.incidentId} on session ${input.sessionId}.`,
   };
 }
 
@@ -150,6 +176,14 @@ async function processIncidentsOnce(): Promise<void> {
       supportingSignals: analystSummary.supportingSignals,
       incidentConfidence: Number.isFinite(incidentConfidence) ? incidentConfidence : 0,
     });
+    const recommendationSummary = buildRecommendationSummary({
+      recommendation: sellerRecommendation,
+      severity,
+      rootCause,
+      confidence: recommendationConfidence,
+      incidentId: incident.id,
+      sessionId: incident.session_id,
+    });
     const dedupeKey = buildRecommendationDedupeKey({
       incidentId: incident.id,
       actionType: sellerRecommendation.actionType,
@@ -165,6 +199,7 @@ async function processIncidentsOnce(): Promise<void> {
         agent: 'session-health-analyst',
         summary: analystSummary.interpretation,
         supportingSignals: analystSummary.supportingSignals,
+        recommendationSummary,
       },
     });
 
@@ -178,6 +213,7 @@ async function processIncidentsOnce(): Promise<void> {
       confidence: recommendationConfidence,
       triggerSignals: analystSummary.supportingSignals,
       dedupeKey,
+      summary: recommendationSummary,
     });
     if (recommendationResult.deduped) {
       console.log(

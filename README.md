@@ -81,6 +81,56 @@ pnpm --filter @stream-pulse/dashboard dev
 
 ---
 
+## Browser WebRTC Telemetry Demo (Real getStats Ingestion)
+
+This PR adds a practical browser path using `packages/webrtc-sdk` and a local loopback demo page.
+
+### Run locally
+
+1. Start dependencies and services:
+
+   ```bash
+   docker compose up -d postgres redis
+   pnpm --filter @stream-pulse/db migrate
+   pnpm --filter @stream-pulse/ingestor dev
+   pnpm --filter @stream-pulse/qoe-engine dev
+   pnpm --filter @stream-pulse/agent-orchestrator dev
+   pnpm --filter @stream-pulse/dashboard dev
+   ```
+
+2. Open `http://localhost:3000/demo/webrtc`.
+3. Keep defaults (or set your own):
+   - `sessionId` must be a UUID
+   - `ingestorUrl` defaults to `http://localhost:4001`
+   - `intervalMs` defaults to `2000`
+4. Click **Start Loopback + Capture**.
+5. Confirm the page shows:
+   - connected/connecting peer state
+   - stats capture active = yes
+   - target session ID
+6. Open `http://localhost:3000` and verify new session/incidents/recommendations appear.
+7. Open the session timeline (`/sessions/:sessionId`) to inspect replay + summaries.
+
+### What the SDK currently maps
+
+The first MVP normalization path is intentionally browser-practical (Chrome-oriented `getStats` fields):
+
+- `rtt_ms`
+- `jitter_ms`
+- `packet_loss_pct`
+- `bitrate_video_kbps`
+- `frame_drops_per_sec`
+- `connection_state` (numeric state mapping with raw state preserved in payload)
+
+The SDK API supports:
+- start polling
+- stop polling
+- configurable interval
+- configurable ingestor URL
+- configurable `sessionId` and `broadcasterId`
+
+---
+
 ## Synthetic Telemetry Demo (End-to-End)
 
 Run the session simulator with named scenarios:
@@ -181,5 +231,5 @@ What is now runnable:
 - session replay timeline view with chronological QoE, incident, recommendation, and operator decision events
 
 Still deferred for later milestones:
-- WebRTC SDK production ingestion path
+- production signaling/STUN/TURN hardening (current demo is local loopback)
 - autonomous remediation execution against external systems

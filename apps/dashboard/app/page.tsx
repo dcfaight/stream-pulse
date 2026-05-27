@@ -1,6 +1,8 @@
 import {
   decideRecommendation,
+  type IncidentFeedRow,
   listRecentIncidents,
+  type RecommendationFeedRow,
   listRecentRecommendations,
   listRecentSessionStatus,
 } from '@stream-pulse/db';
@@ -33,6 +35,44 @@ function statusStyle(status: string | null): { backgroundColor: string; color: s
   if (status === 'superseded') return { backgroundColor: '#f3f4f6', color: '#4b5563' };
   if (status === 'open') return { backgroundColor: '#ffe7d6', color: '#9a3412' };
   return { backgroundColor: '#f3f4f6', color: '#374151' };
+}
+
+function asObject(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function buildIncidentOperatorSummary(incident: IncidentFeedRow): {
+  oneLine: string;
+  rootCause: string;
+  supportingSignals: string;
+} {
+  const payload = asObject(incident.latest_event_payload);
+  const oneLine =
+    typeof payload?.oneLineSummary === 'string'
+      ? payload.oneLineSummary
+      : `Incident ${incident.severity} for session ${incident.session_id}.`;
+  const rootCause =
+    typeof payload?.rootCauseSummary === 'string'
+      ? payload.rootCauseSummary
+      : typeof payload?.rootCauseHypothesis === 'string'
+        ? payload.rootCauseHypothesis
+      : incident.root_cause || 'generalized stream degradation';
+  const supportingSignals =
+    typeof payload?.supportingSignalsSummary === 'string'
+      ? payload.supportingSignalsSummary
+      : 'No signal summary available.';
+
+  return { oneLine, rootCause, supportingSignals };
+}
+
+function buildRecommendationOperatorSummary(recommendation: RecommendationFeedRow): string {
+  const confidence = `${(Number(recommendation.confidence) * 100).toFixed(0)}% confidence`;
+  const severity = recommendation.incident_severity ?? 'unknown-severity';
+  const linkage = recommendation.incident_id
+    ? `Linked to incident ${recommendation.incident_id}.`
+    : 'No linked incident.';
+  return `${recommendation.action_type} (${recommendation.priority}) for ${severity} incident. ${confidence}. ${linkage}`;
 }
 
 async function approveRecommendation(formData: FormData): Promise<void> {
@@ -76,7 +116,8 @@ export default async function Home() {
       <h1>StreamPulse Status</h1>
       <p>
         Session QoE, incidents, and recommendation lifecycle view. Open a session timeline for replay and
-        audit details. Refreshes every 5 seconds.
+        audit details. Refreshes every 5 seconds. Use the{' '}
+        <Link href="/demo/webrtc">WebRTC demo page</Link> to ingest real browser getStats telemetry.
       </p>
 
       <h2>Recent Sessions ({sessions.length})</h2>
@@ -189,6 +230,9 @@ export default async function Home() {
                 'Root Cause Hypothesis',
                 'Confidence',
                 'Recommendations',
+                'Summary',
+                'Root Cause Summary',
+                'Supporting Signals',
                 'Started',
                 'Updated',
               ].map((heading) => (
@@ -202,8 +246,10 @@ export default async function Home() {
             </tr>
           </thead>
           <tbody>
-            {incidents.map((incident) => (
-              <tr key={incident.id}>
+            {incidents.map((incident) => {
+              const summary = buildIncidentOperatorSummary(incident);
+              return (
+                <tr key={incident.id}>
                 <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
                   <code>{incident.id}</code>
                 </td>
@@ -250,14 +296,18 @@ export default async function Home() {
                 <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
                   {incident.active_recommendation_count} active / {incident.recommendation_count} total
                 </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>{summary.oneLine}</td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>{summary.rootCause}</td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>{summary.supportingSignals}</td>
                 <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
                   {formatTimestamp(incident.started_at)}
                 </td>
                 <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
                   {formatTimestamp(incident.updated_at)}
                 </td>
-              </tr>
-            ))}
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       )}
@@ -280,6 +330,7 @@ export default async function Home() {
                 'Confidence',
                 'Recommendation',
                 'Rationale',
+                'Summary',
                 'Status',
                 'Created',
                 'Decision',
@@ -340,6 +391,9 @@ export default async function Home() {
                 </td>
                 <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
                   {recommendation.rationale}
+                </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  {buildRecommendationOperatorSummary(recommendation)}
                 </td>
                 <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
                   <span

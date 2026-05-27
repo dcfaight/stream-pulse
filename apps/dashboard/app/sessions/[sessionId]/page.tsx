@@ -1,5 +1,8 @@
 import {
+  type IncidentFeedRow,
   listRecentRecommendations,
+  type RecommendationFeedRow,
+  type SessionReplayTimelineEventRow,
   listSessionIncidents,
   listSessionQoeTrend,
   listSessionReplayTimeline,
@@ -22,6 +25,43 @@ function prettyPayload(value: unknown): string {
   } catch {
     return 'unserializable payload';
   }
+}
+
+function asObject(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function incidentSummary(incident: IncidentFeedRow): string {
+  const payload = asObject(incident.latest_event_payload);
+  if (typeof payload?.oneLineSummary === 'string') return payload.oneLineSummary;
+  return `Incident ${incident.severity} (${incident.status}) with root-cause hypothesis ${incident.root_cause || 'generalized stream degradation'}.`;
+}
+
+function recommendationSummary(recommendation: RecommendationFeedRow): string {
+  const confidence = `${(Number(recommendation.confidence) * 100).toFixed(0)}% confidence`;
+  return `${recommendation.action_type} (${recommendation.priority}) for ${
+    recommendation.incident_severity ?? 'unknown'
+  } severity incident. ${confidence}.`;
+}
+
+function timelineSummary(event: SessionReplayTimelineEventRow): string {
+  const payload = asObject(event.payload);
+  if (typeof payload?.oneLineSummary === 'string') return payload.oneLineSummary;
+  if (typeof payload?.summary === 'string') return payload.summary;
+  const recommendationSummaryValue = asObject(payload?.recommendationSummary);
+  if (typeof recommendationSummaryValue?.oneLineSummary === 'string') {
+    return recommendationSummaryValue.oneLineSummary;
+  }
+  if (event.event_type === 'recommendation_created' && payload) {
+    const recommendationText =
+      typeof payload.recommendationText === 'string' ? payload.recommendationText : null;
+    if (recommendationText) return recommendationText;
+  }
+  if (event.event_type === 'recommendation_decided' && event.decision) {
+    return `Recommendation ${event.decision} by ${event.operator_id ?? 'operator'}.`;
+  }
+  return '—';
 }
 
 export default async function SessionTimelinePage({
@@ -97,6 +137,7 @@ export default async function SessionTimelinePage({
                 'Root Cause',
                 'Confidence',
                 'Recommendations',
+                'Summary',
                 'Started',
                 'Updated',
               ].map((heading) => (
@@ -123,6 +164,9 @@ export default async function SessionTimelinePage({
                 </td>
                 <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
                   {incident.active_recommendation_count} active / {incident.recommendation_count} total
+                </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  {incidentSummary(incident)}
                 </td>
                 <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
                   {formatTimestamp(incident.started_at)}
@@ -152,6 +196,7 @@ export default async function SessionTimelinePage({
                 'Confidence',
                 'Created',
                 'Decision Timing',
+                'Summary',
               ].map((heading) => (
                 <th
                   key={heading}
@@ -187,6 +232,9 @@ export default async function SessionTimelinePage({
                       ? `status ${recommendation.status} by ${recommendation.decided_by} at ${formatTimestamp(recommendation.decided_at)}`
                       : '—'}
                 </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  {recommendationSummary(recommendation)}
+                </td>
               </tr>
             ))}
           </tbody>
@@ -210,6 +258,7 @@ export default async function SessionTimelinePage({
                 'Status',
                 'Confidence',
                 'Decision',
+                'Summary',
                 'Payload',
               ].map((heading) => (
                 <th
@@ -245,6 +294,7 @@ export default async function SessionTimelinePage({
                     ? `${event.decision}${event.operator_id ? ` by ${event.operator_id}` : ''}`
                     : '—'}
                 </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>{timelineSummary(event)}</td>
                 <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
                   <code>{prettyPayload(event.payload)}</code>
                 </td>

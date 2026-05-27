@@ -4,6 +4,7 @@ import {
   listRecentRecommendations,
   listRecentSessionStatus,
 } from '@stream-pulse/db';
+import Link from 'next/link';
 import { revalidatePath } from 'next/cache';
 import { AutoRefresh } from './auto-refresh';
 
@@ -29,6 +30,7 @@ function statusStyle(status: string | null): { backgroundColor: string; color: s
   if (status === 'pending') return { backgroundColor: '#fff8db', color: '#854d0e' };
   if (status === 'approved') return { backgroundColor: '#e7f8ed', color: '#166534' };
   if (status === 'dismissed') return { backgroundColor: '#fee2e2', color: '#991b1b' };
+  if (status === 'superseded') return { backgroundColor: '#f3f4f6', color: '#4b5563' };
   if (status === 'open') return { backgroundColor: '#ffe7d6', color: '#9a3412' };
   return { backgroundColor: '#f3f4f6', color: '#374151' };
 }
@@ -73,8 +75,8 @@ export default async function Home() {
       <AutoRefresh intervalMs={5000} />
       <h1>StreamPulse Status</h1>
       <p>
-        Milestone 1.5/M2 slice status page with persisted session telemetry and deterministic QoE
-        segments from Postgres. Refreshes every 5 seconds.
+        Session QoE, incidents, and recommendation lifecycle view. Open a session timeline for replay and
+        audit details. Refreshes every 5 seconds.
       </p>
 
       <h2>Recent Sessions ({sessions.length})</h2>
@@ -102,6 +104,7 @@ export default async function Home() {
                 'QoE Score',
                 'QoE Severity',
                 'QoE Updated',
+                'Replay',
               ].map((heading) => (
                 <th
                   key={heading}
@@ -161,6 +164,9 @@ export default async function Home() {
                 <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
                   {formatTimestamp(session.latest_qoe_end_ts)}
                 </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  <Link href={`/sessions/${session.id}`}>Open Timeline</Link>
+                </td>
               </tr>
             ))}
           </tbody>
@@ -181,6 +187,8 @@ export default async function Home() {
                 'Severity',
                 'Status',
                 'Root Cause Hypothesis',
+                'Confidence',
+                'Recommendations',
                 'Started',
                 'Updated',
               ].map((heading) => (
@@ -237,6 +245,12 @@ export default async function Home() {
                   {incident.root_cause || '—'}
                 </td>
                 <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  {(Number(incident.confidence) * 100).toFixed(0)}%
+                </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  {incident.active_recommendation_count} active / {incident.recommendation_count} total
+                </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
                   {formatTimestamp(incident.started_at)}
                 </td>
                 <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
@@ -258,10 +272,12 @@ export default async function Home() {
               {[
                 'Recommendation ID',
                 'Session ID',
+                'Incident ID',
                 'Incident Severity',
                 'Agent',
                 'Priority',
                 'Action Type',
+                'Confidence',
                 'Recommendation',
                 'Rationale',
                 'Status',
@@ -285,6 +301,9 @@ export default async function Home() {
                 </td>
                 <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
                   {recommendation.session_id ? <code>{recommendation.session_id}</code> : '—'}
+                </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  {recommendation.incident_id ? <code>{recommendation.incident_id}</code> : '—'}
                 </td>
                 <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
                   {recommendation.incident_severity ? (
@@ -312,6 +331,9 @@ export default async function Home() {
                 </td>
                 <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
                   {recommendation.action_type}
+                </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  {(Number(recommendation.confidence) * 100).toFixed(0)}%
                 </td>
                 <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
                   {recommendation.recommendation_text}

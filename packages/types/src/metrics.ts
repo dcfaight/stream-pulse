@@ -25,8 +25,26 @@ export interface StatSnapshot {
   frameWidth?: number;
   frameHeight?: number;
   frameDrops?: number;
+  outboundVideoTrackCount?: number;
+  inboundVideoTrackCount?: number;
+  outboundAudioTrackCount?: number;
+  inboundAudioTrackCount?: number;
+  outboundVideoTrackId?: string;
+  inboundVideoTrackId?: string;
+  outboundAudioTrackId?: string;
+  inboundAudioTrackId?: string;
   audioLevel?: number; // 0.0 – 1.0
   connectionState?: string;
+  candidatePairState?: string;
+  candidateSelected?: boolean;
+  candidateNominated?: boolean;
+  candidateWritable?: boolean;
+  localCandidateType?: string;
+  remoteCandidateType?: string;
+  networkType?: string;
+  relayProtocol?: string;
+  candidateTransportProtocol?: string;
+  selectedCandidatePairId?: string;
   browserName?: string;
 }
 
@@ -53,7 +71,15 @@ export type MetricType =
   | 'pli_count'
   | 'available_outgoing_bitrate_kbps'
   | 'audio_level'
-  | 'connection_state';
+  | 'connection_state'
+  | 'outbound_video_track_count'
+  | 'inbound_video_track_count'
+  | 'outbound_audio_track_count'
+  | 'inbound_audio_track_count'
+  | 'candidate_pair_state'
+  | 'candidate_selected'
+  | 'candidate_nominated'
+  | 'candidate_writable';
 
 export interface MetricEvent {
   id: string;
@@ -85,4 +111,12 @@ export interface DerivedMetrics {
   availableOutgoingBitrateKbps: number;
   audioLevel: number;
   connectionState: string;
+  outboundVideoTrackCount: number;
+  inboundVideoTrackCount: number;
+  outboundAudioTrackCount: number;
+  inboundAudioTrackCount: number;
+  candidatePairState: number;
+  candidateSelected: number;
+  candidateNominated: number;
+  candidateWritable: number;
 }

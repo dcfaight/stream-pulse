@@ -1,5 +1,7 @@
 import {
+  getSessionLatestNetworkInsight,
   getSessionContext,
+  listSessionMediaRoleBreakdown,
   getSessionSummary,
   type IncidentFeedRow,
   listRecentRecommendations,
@@ -10,6 +12,7 @@ import {
   listSessionReplayTimeline,
   resolveIncident,
 } from '@stream-pulse/db';
+import { computeSessionHealthGrade } from '../../lib/session-health';
 import Link from 'next/link';
 import { revalidatePath } from 'next/cache';
 import { AutoRefresh } from '../../auto-refresh';
@@ -92,14 +95,18 @@ export default async function SessionTimelinePage({
   params: Promise<{ sessionId: string }>;
 }) {
   const { sessionId } = await params;
-  const [qoeTrend, incidents, recommendations, timeline, sessionSummary, sessionContext] = await Promise.all([
-    listSessionQoeTrend(sessionId, 120).catch(() => []),
-    listSessionIncidents(sessionId, 50).catch(() => []),
-    listRecentRecommendations(100, sessionId).catch(() => []),
-    listSessionReplayTimeline(sessionId, 300).catch(() => []),
-    getSessionSummary(sessionId).catch(() => null),
-    getSessionContext(sessionId).catch(() => null),
-  ]);
+  const [qoeTrend, incidents, recommendations, timeline, sessionSummary, sessionContext, mediaBreakdown, networkInsight] =
+    await Promise.all([
+      listSessionQoeTrend(sessionId, 120).catch(() => []),
+      listSessionIncidents(sessionId, 50).catch(() => []),
+      listRecentRecommendations(100, sessionId).catch(() => []),
+      listSessionReplayTimeline(sessionId, 300).catch(() => []),
+      getSessionSummary(sessionId).catch(() => null),
+      getSessionContext(sessionId).catch(() => null),
+      listSessionMediaRoleBreakdown(sessionId).catch(() => []),
+      getSessionLatestNetworkInsight(sessionId).catch(() => null),
+    ]);
+  const health = computeSessionHealthGrade(sessionSummary);
 
   return (
     <main style={{ fontFamily: 'system-ui, sans-serif', margin: '2rem auto', maxWidth: 1100 }}>
@@ -113,14 +120,18 @@ export default async function SessionTimelinePage({
         recommendations, and operator decisions.
       </p>
       <p>
-        Export report:{' '}
-        <a href={`/api/reports/session/${sessionId}?format=json`} target="_blank" rel="noreferrer">
+        Download report:{' '}
+        <a href={`/api/reports/session/${sessionId}?format=json`} target="_blank" rel="noreferrer" download>
           JSON
         </a>{' '}
         •{' '}
-        <a href={`/api/reports/session/${sessionId}?format=md`} target="_blank" rel="noreferrer">
+        <a href={`/api/reports/session/${sessionId}?format=md`} target="_blank" rel="noreferrer" download>
           Markdown
-        </a>
+        </a>{' '}
+        •{' '}
+        <Link href={`/api/reports/session/${sessionId}?format=md`} target="_blank" rel="noreferrer">
+          Preview Markdown
+        </Link>
       </p>
       {sessionSummary ? (
         <section style={{ border: '1px solid #ddd', padding: '0.9rem', marginBottom: '1rem' }}>
@@ -145,8 +156,69 @@ export default async function SessionTimelinePage({
             Dominant root cause: {sessionSummary.top_root_cause ?? '—'} • Final QoE:{' '}
             {sessionSummary.final_qoe_score ?? '—'} ({sessionSummary.final_qoe_severity ?? '—'})
           </p>
+          <p>
+            Session health grade: <strong>{health.grade}</strong> ({health.label}) • Score {health.score}
+          </p>
+          <p>{health.narrative}</p>
         </section>
       ) : null}
+
+      <section style={{ border: '1px solid #ddd', padding: '0.9rem', marginBottom: '1rem' }}>
+        <h2 style={{ marginTop: 0 }}>Media Role + Track Breakdown</h2>
+        {mediaBreakdown.length === 0 ? (
+          <p>No role/track telemetry breakdown available yet.</p>
+        ) : (
+          <table style={{ borderCollapse: 'collapse', width: '100%', border: '1px solid #ddd' }}>
+            <thead>
+              <tr>
+                {[
+                  'Role',
+                  'Direction',
+                  'Metric Events',
+                  'Video Events',
+                  'Audio Events',
+                  'Tracks (outV/inV/outA/inA)',
+                ].map((heading) => (
+                  <th key={heading} style={{ border: '1px solid #ddd', padding: '0.5rem', textAlign: 'left' }}>
+                    {heading}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {mediaBreakdown.map((row) => (
+                <tr key={`${row.source_role}-${row.stream_direction}`}>
+                  <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>{row.source_role}</td>
+                  <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>{row.stream_direction}</td>
+                  <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>{row.metric_events}</td>
+                  <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>{row.video_metric_events}</td>
+                  <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>{row.audio_metric_events}</td>
+                  <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                    {row.max_outbound_video_tracks}/{row.max_inbound_video_tracks}/
+                    {row.max_outbound_audio_tracks}/{row.max_inbound_audio_tracks}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </section>
+
+      <section style={{ border: '1px solid #ddd', padding: '0.9rem', marginBottom: '1rem' }}>
+        <h2 style={{ marginTop: 0 }}>Latest Network/Candidate Snapshot</h2>
+        {networkInsight ? (
+          <p>
+            {formatTimestamp(networkInsight.ts)} • state={networkInsight.candidate_pair_state ?? 'unknown'} •
+            local={networkInsight.local_candidate_type ?? 'unknown'} • remote=
+            {networkInsight.remote_candidate_type ?? 'unknown'} • network=
+            {networkInsight.network_type ?? 'unknown'} • relay={networkInsight.relay_protocol ?? '—'} •
+            transport={networkInsight.candidate_transport_protocol ?? '—'} • outgoing bitrate=
+            {networkInsight.available_outgoing_bitrate_kbps ?? '—'} kbps • rtt={networkInsight.rtt_ms ?? '—'} ms
+          </p>
+        ) : (
+          <p>No candidate/network telemetry snapshot available for this session yet.</p>
+        )}
+      </section>
 
       <h2>QoE Trend ({qoeTrend.length})</h2>
       {qoeTrend.length === 0 ? (

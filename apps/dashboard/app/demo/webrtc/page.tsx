@@ -114,12 +114,6 @@ export default function WebRtcDemoPage() {
     typeof navigator === 'undefined' ? 'browser:unknown' : `browser:${navigator.userAgent}`,
   );
   const [sessionLabel, setSessionLabel] = useState('Browser Telemetry Demo');
-  const [sourceRole, setSourceRole] = useState<'broadcaster' | 'viewer' | 'browser-demo' | 'simulator'>(
-    'browser-demo',
-  );
-  const [streamDirection, setStreamDirection] = useState<'outbound' | 'inbound' | 'bidirectional'>(
-    'bidirectional',
-  );
   const [ingestorUrl, setIngestorUrl] = useState('http://localhost:4001');
   const [intervalMs, setIntervalMs] = useState(2000);
   const [connectionState, setConnectionState] = useState<RTCPeerConnectionState>('new');
@@ -127,18 +121,33 @@ export default function WebRtcDemoPage() {
   const [statusMessage, setStatusMessage] = useState('Idle');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [lastMetric, setLastMetric] = useState<{
+    sourceRole: string;
     metricType: string;
     value: number;
     ts: number;
   } | null>(null);
 
-  const clientRef = useRef<SessionClient | null>(null);
+  const broadcasterClientRef = useRef<SessionClient | null>(null);
+  const viewerClientRef = useRef<SessionClient | null>(null);
   const loopbackRef = useRef<LoopbackHandle | null>(null);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
 
+  const browserSupportNote =
+    typeof navigator === 'undefined'
+      ? 'Browser support unknown outside browser runtime.'
+      : /Chrome|Chromium|Edg\//.test(navigator.userAgent)
+        ? 'Best effort support: Chromium-based browsers (recommended).'
+        : /Firefox\//.test(navigator.userAgent)
+          ? 'Partial support: Firefox may expose fewer stats fields.'
+          : /Safari\//.test(navigator.userAgent)
+            ? 'Partial support: Safari stats coverage is more limited.'
+            : 'Support not guaranteed for this browser.';
+
   const stopDemo = () => {
-    clientRef.current?.stop();
-    clientRef.current = null;
+    broadcasterClientRef.current?.stop();
+    viewerClientRef.current?.stop();
+    broadcasterClientRef.current = null;
+    viewerClientRef.current = null;
     loopbackRef.current?.stop();
     loopbackRef.current = null;
     if (remoteVideoRef.current) {
@@ -169,32 +178,62 @@ export default function WebRtcDemoPage() {
         void remoteVideoRef.current.play().catch(() => undefined);
       }
 
-      const client = createSessionClient(loopback.senderPeer, {
+      const broadcasterClient = createSessionClient(loopback.senderPeer, {
         intervalMs,
         ingestorUrl,
         sessionId,
         broadcasterId,
         sourceType,
-        sourceLabel,
+        sourceLabel: `${sourceLabel}:broadcaster`,
         runtimeLabel,
         sessionLabel,
-        sourceRole,
-        streamDirection,
+        sourceRole: 'broadcaster',
+        streamDirection: 'outbound',
+        broadcasterRole: 'publisher',
         onError: (error) => {
           setErrorMessage(error instanceof Error ? error.message : 'Unknown SDK error');
         },
         onMetric: (metric) => {
           setLastMetric({
+            sourceRole: metric.snapshot.sourceRole ?? 'broadcaster',
             metricType: metric.metricType,
             value: metric.value,
             ts: metric.ts,
           });
         },
       });
-      clientRef.current = client;
-      client.start();
-      setCaptureActive(client.isActive());
-      setStatusMessage('Loopback connected; getStats telemetry polling is active.');
+      const viewerClient = createSessionClient(loopback.receiverPeer, {
+        intervalMs,
+        ingestorUrl,
+        sessionId,
+        broadcasterId,
+        sourceType,
+        sourceLabel: `${sourceLabel}:viewer`,
+        runtimeLabel,
+        sessionLabel,
+        sourceRole: 'viewer',
+        streamDirection: 'inbound',
+        broadcasterRole: 'viewer-monitor',
+        onError: (error) => {
+          setErrorMessage(error instanceof Error ? error.message : 'Unknown SDK error');
+        },
+        onMetric: (metric) => {
+          setLastMetric({
+            sourceRole: metric.snapshot.sourceRole ?? 'viewer',
+            metricType: metric.metricType,
+            value: metric.value,
+            ts: metric.ts,
+          });
+        },
+      });
+      broadcasterClientRef.current = broadcasterClient;
+      viewerClientRef.current = viewerClient;
+      broadcasterClient.start();
+      viewerClient.start();
+      setCaptureActive(broadcasterClient.isActive() && viewerClient.isActive());
+      setStatusMessage(
+        'Loopback connected; broadcaster (outbound) and viewer (inbound) getStats telemetry are active.',
+      );
     } catch (error) {
       stopDemo();
       setErrorMessage(error instanceof Error ? error.message : 'Failed to start WebRTC demo');
@@ -211,8 +250,11 @@ export default function WebRtcDemoPage() {
       <h1>WebRTC Browser Telemetry Demo</h1>
       <p>
         Creates a local loopback RTCPeerConnection, polls <code>getStats()</code>, and sends canonical
-        metrics to <code>/telemetry</code>. Includes source/runtime/role/direction labels for easier
-        debugging. This MVP path is primarily validated on Chromium-based browsers.
+        metrics to <code>/telemetry</code>. This page runs dual telemetry capture from the same loopback:
+        broadcaster outbound + viewer inbound for clearer role/direction semantics.
+      </p>
+      <p>
+        <strong>Browser compatibility:</strong> {browserSupportNote}
       </p>
 
       <div style={{ display: 'grid', gap: '0.75rem', maxWidth: 720 }}>
@@ -263,31 +305,6 @@ export default function WebRtcDemoPage() {
             onChange={(event) => setSessionLabel(event.target.value)}
             style={{ display: 'block', width: '100%', marginTop: '0.25rem' }}
           />
-        </label>
-        <label>
-          Source Role
-          <select
-            value={sourceRole}
-            onChange={(event) => setSourceRole(event.target.value as typeof sourceRole)}
-            style={{ display: 'block', width: '100%', marginTop: '0.25rem' }}
-          >
-            <option value="browser-demo">browser-demo</option>
-            <option value="broadcaster">broadcaster</option>
-            <option value="viewer">viewer</option>
-            <option value="simulator">simulator</option>
-          </select>
-        </label>
-        <label>
-          Stream Direction
-          <select
-            value={streamDirection}
-            onChange={(event) => setStreamDirection(event.target.value as typeof streamDirection)}
-            style={{ display: 'block', width: '100%', marginTop: '0.25rem' }}
-          >
-            <option value="bidirectional">bidirectional</option>
-            <option value="outbound">outbound</option>
-            <option value="inbound">inbound</option>
-          </select>
         </label>
         <label>
           Ingestor URL
@@ -343,7 +360,7 @@ export default function WebRtcDemoPage() {
           <strong>Runtime:</strong> {runtimeLabel}
         </p>
         <p>
-          <strong>Role / Direction:</strong> {sourceRole} / {streamDirection}
+          <strong>Role / Direction capture:</strong> broadcaster/outbound + viewer/inbound
         </p>
         <p>
           <strong>Session label:</strong> {sessionLabel}
@@ -351,7 +368,7 @@ export default function WebRtcDemoPage() {
         <p>
           <strong>Latest metric:</strong>{' '}
           {lastMetric
-            ? `${lastMetric.metricType}=${lastMetric.value} @ ${new Date(lastMetric.ts).toLocaleTimeString()}`
+            ? `[${lastMetric.sourceRole}] ${lastMetric.metricType}=${lastMetric.value} @ ${new Date(lastMetric.ts).toLocaleTimeString()}`
             : '—'}
         </p>
         {errorMessage ? (

@@ -7,6 +7,10 @@ import type { MetricType, StatSnapshot } from '@stream-pulse/types';
 interface TelemetryRequestBody {
   sessionId?: string;
   broadcasterId?: string;
+  sourceType?: string;
+  sourceLabel?: string;
+  runtimeLabel?: string;
+  sessionLabel?: string;
   metricType?: MetricType;
   value?: number;
   ts?: number;
@@ -76,7 +80,21 @@ const server = createServer(async (request, response) => {
       const broadcasterId = body.broadcasterId?.trim() || 'synthetic-broadcaster';
       const eventTimestamp = new Date(body.ts ?? Date.now());
 
-      await upsertSession(sessionId, broadcasterId);
+      await upsertSession({
+        sessionId,
+        broadcasterId,
+        sourceType: body.sourceType,
+        sourceLabel: body.sourceLabel,
+        runtimeLabel: body.runtimeLabel,
+        sessionLabel: body.sessionLabel,
+        metadata:
+          body.rawPayload && typeof body.rawPayload === 'object'
+            ? {
+                browserName: body.rawPayload.browserName,
+                broadcasterRole: body.rawPayload.broadcasterRole,
+              }
+            : undefined,
+      });
       const metricEvent = await insertMetricEvent({
         sessionId,
         ts: eventTimestamp,

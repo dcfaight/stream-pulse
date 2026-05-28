@@ -113,14 +113,23 @@ This PR adds a practical browser path using `packages/webrtc-sdk` and a local lo
 
 ### What the SDK currently maps
 
-The first MVP normalization path is intentionally browser-practical (Chrome-oriented `getStats` fields):
+The current normalization path remains deterministic and browser-practical (primarily Chrome-friendly), while being more defensive when stats are missing:
 
 - `rtt_ms`
 - `jitter_ms`
 - `packet_loss_pct`
 - `bitrate_video_kbps`
+- `bitrate_audio_kbps`
 - `frame_drops_per_sec`
+- `frames_per_second`
+- `frame_width`
+- `frame_height`
+- `bytes_sent_video`
+- `bytes_received_video`
+- `audio_level` (when available)
 - `connection_state` (numeric state mapping with raw state preserved in payload)
+
+Session/source labels now flow with each event (`sourceType`, `sourceLabel`, `runtimeLabel`, `sessionLabel`) and are persisted on sessions for observability.
 
 The SDK API supports:
 - start polling
@@ -128,6 +137,8 @@ The SDK API supports:
 - configurable interval
 - configurable ingestor URL
 - configurable `sessionId` and `broadcasterId`
+- configurable source/runtime/session labels
+- optional metric callback for latest-emitted metric display in the demo
 
 ---
 
@@ -197,6 +208,28 @@ Expected result:
    LIMIT 5;
    ```
 
+### Incident resolution + effectiveness loop
+
+1. From dashboard Incident Feed (or session timeline Incident Markers), click **Mark Resolved** / **Resolve** on an open incident.
+2. Add optional resolution notes and submit.
+3. Verify:
+   - incident status becomes `resolved`
+   - `resolved_at`, `resolved_by`, notes, and deterministic resolution/mitigation summaries are visible
+   - replay timeline includes an `incident_resolved` event
+4. Continue ingesting telemetry (browser demo or simulator) and let qoe-engine process segments.
+5. Verify recommendation effectiveness updates in Recommendations:
+   - `helpful`, `not_helpful`, `unconfirmed`, or `unknown`
+   - deterministic reason text (for example QoE score change or incident resolved after approval)
+
+### Session-level operator summary
+
+Open `/sessions/:sessionId` and review the **Session Summary** block, which includes:
+- incident/open/resolved counts
+- recommendation counts and approvals/dismissals
+- helpful vs not-helpful recommendation counts
+- dominant root-cause theme
+- final QoE score and severity
+
 ---
 
 ## Design Principles
@@ -227,8 +260,11 @@ What is now runnable:
   - Seller Assistant deterministic recommendation generation with action type + priority
 - recommendation persistence plus human-in-the-loop approve/dismiss persistence
 - deterministic recommendation dedupe + lifecycle states (`pending`, `approved`, `dismissed`, `superseded`)
+- explicit incident resolution workflow with persisted audit fields and resolution summaries
+- deterministic recommendation effectiveness tracking from post-decision observations
 - dashboard session + incident + recommendation feed with lightweight polling refresh
 - session replay timeline view with chronological QoE, incident, recommendation, and operator decision events
+- session-level post-session summary on timeline view
 
 Still deferred for later milestones:
 - production signaling/STUN/TURN hardening (current demo is local loopback)

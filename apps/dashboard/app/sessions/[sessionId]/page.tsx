@@ -1,4 +1,5 @@
 import {
+  getSessionSummary,
   type IncidentFeedRow,
   listRecentRecommendations,
   type RecommendationFeedRow,
@@ -6,8 +7,10 @@ import {
   listSessionIncidents,
   listSessionQoeTrend,
   listSessionReplayTimeline,
+  resolveIncident,
 } from '@stream-pulse/db';
 import Link from 'next/link';
+import { revalidatePath } from 'next/cache';
 import { AutoRefresh } from '../../auto-refresh';
 
 export const dynamic = 'force-dynamic';
@@ -33,8 +36,10 @@ function asObject(value: unknown): Record<string, unknown> | null {
 }
 
 function incidentSummary(incident: IncidentFeedRow): string {
+  if (incident.status === 'resolved' && incident.resolution_summary) return incident.resolution_summary;
   const payload = asObject(incident.latest_event_payload);
   if (typeof payload?.oneLineSummary === 'string') return payload.oneLineSummary;
+  if (typeof payload?.resolutionSummary === 'string') return payload.resolutionSummary;
   return `Incident ${incident.severity} (${incident.status}) with root-cause hypothesis ${incident.root_cause || 'generalized stream degradation'}.`;
 }
 
@@ -49,6 +54,7 @@ function timelineSummary(event: SessionReplayTimelineEventRow): string {
   const payload = asObject(event.payload);
   if (typeof payload?.oneLineSummary === 'string') return payload.oneLineSummary;
   if (typeof payload?.summary === 'string') return payload.summary;
+  if (typeof payload?.resolutionSummary === 'string') return payload.resolutionSummary;
   const recommendationSummaryValue = asObject(payload?.recommendationSummary);
   if (typeof recommendationSummaryValue?.oneLineSummary === 'string') {
     return recommendationSummaryValue.oneLineSummary;
@@ -64,17 +70,33 @@ function timelineSummary(event: SessionReplayTimelineEventRow): string {
   return '—';
 }
 
+async function resolveIncidentAction(formData: FormData): Promise<void> {
+  'use server';
+  const incidentId = String(formData.get('incidentId') ?? '');
+  const sessionId = String(formData.get('sessionId') ?? '');
+  if (!incidentId || !sessionId) return;
+  const notes = String(formData.get('resolutionNotes') ?? '').trim();
+  await resolveIncident({
+    incidentId,
+    operatorId: 'local-operator',
+    notes: notes || 'Resolved from session timeline',
+  });
+  revalidatePath(`/sessions/${sessionId}`);
+  revalidatePath('/');
+}
+
 export default async function SessionTimelinePage({
   params,
 }: {
   params: Promise<{ sessionId: string }>;
 }) {
   const { sessionId } = await params;
-  const [qoeTrend, incidents, recommendations, timeline] = await Promise.all([
+  const [qoeTrend, incidents, recommendations, timeline, sessionSummary] = await Promise.all([
     listSessionQoeTrend(sessionId, 120).catch(() => []),
     listSessionIncidents(sessionId, 50).catch(() => []),
     listRecentRecommendations(100, sessionId).catch(() => []),
     listSessionReplayTimeline(sessionId, 300).catch(() => []),
+    getSessionSummary(sessionId).catch(() => null),
   ]);
 
   return (
@@ -88,6 +110,23 @@ export default async function SessionTimelinePage({
         Session <code>{sessionId}</code> chronological audit trail: QoE segments, incident changes,
         recommendations, and operator decisions.
       </p>
+      {sessionSummary ? (
+        <section style={{ border: '1px solid #ddd', padding: '0.9rem', marginBottom: '1rem' }}>
+          <h2 style={{ marginTop: 0 }}>Session Summary</h2>
+          <p>
+            Incidents: {sessionSummary.incident_count} ({sessionSummary.resolved_incident_count} resolved /{' '}
+            {sessionSummary.open_incident_count} open) • Recommendations: {sessionSummary.recommendation_count}{' '}
+            ({sessionSummary.approved_recommendation_count} approved /{' '}
+            {sessionSummary.dismissed_recommendation_count} dismissed) • Effectiveness:{' '}
+            {sessionSummary.helpful_recommendation_count} helpful /{' '}
+            {sessionSummary.not_helpful_recommendation_count} not helpful
+          </p>
+          <p>
+            Dominant root cause: {sessionSummary.top_root_cause ?? '—'} • Final QoE:{' '}
+            {sessionSummary.final_qoe_score ?? '—'} ({sessionSummary.final_qoe_severity ?? '—'})
+          </p>
+        </section>
+      ) : null}
 
       <h2>QoE Trend ({qoeTrend.length})</h2>
       {qoeTrend.length === 0 ? (
@@ -138,8 +177,10 @@ export default async function SessionTimelinePage({
                 'Confidence',
                 'Recommendations',
                 'Summary',
+                'Resolution',
                 'Started',
                 'Updated',
+                'Action',
               ].map((heading) => (
                 <th
                   key={heading}
@@ -169,10 +210,34 @@ export default async function SessionTimelinePage({
                   {incidentSummary(incident)}
                 </td>
                 <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  {incident.status === 'resolved'
+                    ? incident.resolution_summary || 'Resolved'
+                    : '—'}
+                </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
                   {formatTimestamp(incident.started_at)}
                 </td>
                 <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
                   {formatTimestamp(incident.updated_at)}
+                </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  {incident.status === 'open' ? (
+                    <form action={resolveIncidentAction} style={{ display: 'grid', gap: '0.35rem' }}>
+                      <input type="hidden" name="incidentId" value={incident.id} />
+                      <input type="hidden" name="sessionId" value={sessionId} />
+                      <input
+                        type="text"
+                        name="resolutionNotes"
+                        placeholder="Resolution notes"
+                        style={{ width: 180 }}
+                      />
+                      <button type="submit">Resolve</button>
+                    </form>
+                  ) : (
+                    <>
+                      {incident.resolved_by ?? 'operator'} at {formatTimestamp(incident.resolved_at)}
+                    </>
+                  )}
                 </td>
               </tr>
             ))}
@@ -196,6 +261,7 @@ export default async function SessionTimelinePage({
                 'Confidence',
                 'Created',
                 'Decision Timing',
+                'Effectiveness',
                 'Summary',
               ].map((heading) => (
                 <th
@@ -231,6 +297,12 @@ export default async function SessionTimelinePage({
                     : recommendation.decided_by
                       ? `status ${recommendation.status} by ${recommendation.decided_by} at ${formatTimestamp(recommendation.decided_at)}`
                       : '—'}
+                </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  {recommendation.effectiveness_signal.replace('_', ' ')}
+                  {recommendation.effectiveness_reason
+                    ? ` — ${recommendation.effectiveness_reason}`
+                    : ''}
                 </td>
                 <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
                   {recommendationSummary(recommendation)}

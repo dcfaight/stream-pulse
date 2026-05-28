@@ -1,4 +1,5 @@
 import {
+  assessRecommendationEffectivenessForSession,
   createIncident,
   findRecentOpenIncidentForSession,
   insertIncidentTimelineEntry,
@@ -407,6 +408,7 @@ async function scoreSessionsOnce(): Promise<void> {
       qoeSeverity: severity,
       signals,
     });
+    await assessRecommendationEffectivenessForSession(session.id);
 
     console.log(
       `Scored session ${session.id}: score=${score} severity=${severity} events=${events.length}`,

@@ -103,14 +103,23 @@ This PR adds a practical browser path using `packages/webrtc-sdk` and a local lo
    - `sessionId` must be a UUID
    - `ingestorUrl` defaults to `http://localhost:4001`
    - `intervalMs` defaults to `2000`
-   - `sourceRole` / `streamDirection` default to `browser-demo` / `bidirectional`
 4. Click **Start Loopback + Capture**.
 5. Confirm the page shows:
    - connected/connecting peer state
    - stats capture active = yes
+   - dual role capture mode (`broadcaster/outbound` + `viewer/inbound`)
+   - browser compatibility note (Chromium recommended; Firefox/Safari partial coverage)
    - target session ID
 6. Open `http://localhost:3000` and verify new session/incidents/recommendations appear.
-7. Open the session timeline (`/sessions/:sessionId`) to inspect replay + summaries.
+7. Open the session timeline (`/sessions/:sessionId`) to inspect:
+   - replay + deterministic summaries
+   - **Media Role + Track Breakdown**
+   - **Latest Network/Candidate Snapshot**
+   - **Session health grade**
+8. Download reports from the timeline page:
+   - JSON download
+   - Markdown download
+   - Markdown preview
 
 ### What the SDK currently maps
 
@@ -139,6 +148,7 @@ The current normalization path remains deterministic and browser-practical (prim
 
 Session/source labels now flow with each event (`sourceType`, `sourceLabel`, `runtimeLabel`, `sessionLabel`) and are persisted on sessions for observability.
 Role/direction labels now also flow and persist (`sourceRole`, `streamDirection`) for clearer telemetry origin and media direction interpretation.
+Track-count and candidate details are also captured when available (`outbound/inbound audio/video track counts`, candidate pair state, selected local/remote candidate hints, and transport/network hints).
 
 The SDK API supports:
 - start polling
@@ -244,9 +254,10 @@ Open `/sessions/:sessionId` and review the **Session Summary** block, which incl
 
 After running at least two sessions (browser demo and/or simulator), open `http://localhost:3000` and review:
 - **Cross-Session Comparison**
+- **Time-Window Comparison** (`recent_24h`, `prior_24h`, `recent_7d`, `prior_7d`)
 - **Session Cohorts**
 - **Incident + Recommendation Trends**
-- **Recommendation Tuning Feedback**
+- **Recommendation Action Drilldowns** (approval/helpfulness + root-cause/source patterns)
 
 From `/sessions/:sessionId`, export post-session reports:
 - JSON: `/api/reports/session/:sessionId?format=json`
@@ -254,6 +265,9 @@ From `/sessions/:sessionId`, export post-session reports:
 
 Export reports include:
 - session metadata + source/role/direction labels
+- role/direction media breakdown + track counts
+- latest candidate/network snapshot when available
+- deterministic session health grade + narrative summary
 - final QoE state
 - incident and recommendation counts
 - approvals/dismissals and helpful/not-helpful effectiveness totals
@@ -295,11 +309,17 @@ What is now runnable:
 - session replay timeline view with chronological QoE, incident, recommendation, and operator decision events
 - session-level post-session summary on timeline view
 - role and stream-direction labels surfaced across telemetry/session reporting
+- explicit broadcaster/outbound + viewer/inbound dual-role telemetry in browser demo
+- track-count and candidate/network hints surfaced in session reports/timeline views
 - post-session report export endpoint (`json` + `md`)
+- operator-friendly report download flow from session timeline
 - cross-session comparison/cohort views and incident/recommendation trend aggregation panels
-- recommendation action-type tuning feedback view (approved/helpful/dismissed/not-helpful breakdown)
+- time-window comparison view (recent/prior windows)
+- recommendation action drilldown view with root-cause and source-pattern context
+- deterministic session health grade surfaced on timeline/reporting views
 
 Still deferred for later milestones:
 - production signaling/STUN/TURN hardening (current demo is local loopback)
+- full production candidate/network path diagnostics beyond lightweight telemetry hints
 - full production multi-browser validation/certification
 - autonomous remediation execution against external systems

@@ -49,6 +49,11 @@ export interface SessionStatusRow {
   latest_qoe_score: string | null;
   latest_qoe_severity: string | null;
   latest_qoe_end_ts: Date | null;
+  incident_count: string;
+  recommendation_count: string;
+  approved_count: string;
+  helpful_count: string;
+  not_helpful_count: string;
 }
 
 export interface SessionContextRow {
@@ -161,6 +166,9 @@ export interface SessionSummaryRow {
   dismissed_recommendation_count: string;
   helpful_recommendation_count: string;
   not_helpful_recommendation_count: string;
+  critical_incident_count: string;
+  poor_incident_count: string;
+  degraded_incident_count: string;
   top_root_cause: string | null;
   final_qoe_score: string | null;
   final_qoe_severity: string | null;
@@ -236,6 +244,50 @@ export interface RecommendationActionTuningRow {
   dismissed_count: string;
   helpful_count: string;
   not_helpful_count: string;
+}
+
+export interface SessionWindowComparisonRow {
+  window_key: string;
+  session_count: string;
+  incident_count: string;
+  open_incident_count: string;
+  resolved_incident_count: string;
+  critical_incident_count: string;
+  poor_incident_count: string;
+  recommendation_count: string;
+  approval_rate_pct: string;
+  helpful_rate_pct: string;
+}
+
+export interface RecommendationActionDrilldownRow extends RecommendationActionTuningRow {
+  top_root_cause: string | null;
+  top_source_role: string | null;
+  top_source_type: string | null;
+}
+
+export interface SessionMediaRoleBreakdownRow {
+  source_role: string;
+  stream_direction: string;
+  metric_events: string;
+  video_metric_events: string;
+  audio_metric_events: string;
+  max_outbound_video_tracks: string;
+  max_inbound_video_tracks: string;
+  max_outbound_audio_tracks: string;
+  max_inbound_audio_tracks: string;
+}
+
+export interface SessionLatestNetworkInsightRow {
+  ts: Date;
+  metric_type: string;
+  candidate_pair_state: string | null;
+  local_candidate_type: string | null;
+  remote_candidate_type: string | null;
+  network_type: string | null;
+  relay_protocol: string | null;
+  candidate_transport_protocol: string | null;
+  available_outgoing_bitrate_kbps: string | null;
+  rtt_ms: string | null;
 }
 
 export interface SessionReplayTimelineEventRow {
@@ -468,7 +520,12 @@ export async function listRecentSessionStatus(limit = 20): Promise<SessionStatus
         COUNT(me.id)::text AS metric_events_count,
         lq.score::text AS latest_qoe_score,
         lq.severity AS latest_qoe_severity,
-        lq.end_ts AS latest_qoe_end_ts
+        lq.end_ts AS latest_qoe_end_ts,
+        COALESCE(inc.incident_count, 0)::text AS incident_count,
+        COALESCE(rec.recommendation_count, 0)::text AS recommendation_count,
+        COALESCE(rec.approved_count, 0)::text AS approved_count,
+        COALESCE(rec.helpful_count, 0)::text AS helpful_count,
+        COALESCE(rec.not_helpful_count, 0)::text AS not_helpful_count
       FROM sessions s
       LEFT JOIN LATERAL (
         SELECT metric_type, value, ts
@@ -477,6 +534,21 @@ export async function listRecentSessionStatus(limit = 20): Promise<SessionStatus
         ORDER BY ts DESC
         LIMIT 1
       ) lm ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT COUNT(*) AS incident_count
+        FROM incidents i
+        WHERE i.session_id = s.id
+      ) inc ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT
+          COUNT(*) AS recommendation_count,
+          COUNT(*) FILTER (WHERE r.status = 'approved') AS approved_count,
+          COUNT(*) FILTER (WHERE r.effectiveness_signal = 'helpful') AS helpful_count,
+          COUNT(*) FILTER (WHERE r.effectiveness_signal = 'not_helpful') AS not_helpful_count
+        FROM agent_recommendations r
+        JOIN incidents i ON i.id = r.incident_id
+        WHERE i.session_id = s.id
+      ) rec ON TRUE
       LEFT JOIN LATERAL (
         SELECT score, severity, end_ts
         FROM qoe_segments
@@ -500,6 +572,11 @@ export async function listRecentSessionStatus(limit = 20): Promise<SessionStatus
         lm.metric_type,
         lm.value,
         lm.ts,
+        inc.incident_count,
+        rec.recommendation_count,
+        rec.approved_count,
+        rec.helpful_count,
+        rec.not_helpful_count,
         lq.score,
         lq.severity,
         lq.end_ts
@@ -1578,6 +1655,9 @@ export async function getSessionSummary(sessionId: string): Promise<SessionSumma
         COALESCE(inc.incident_count, 0)::text AS incident_count,
         COALESCE(inc.open_incident_count, 0)::text AS open_incident_count,
         COALESCE(inc.resolved_incident_count, 0)::text AS resolved_incident_count,
+        COALESCE(inc.critical_incident_count, 0)::text AS critical_incident_count,
+        COALESCE(inc.poor_incident_count, 0)::text AS poor_incident_count,
+        COALESCE(inc.degraded_incident_count, 0)::text AS degraded_incident_count,
         COALESCE(rec.recommendation_count, 0)::text AS recommendation_count,
         COALESCE(rec.approved_recommendation_count, 0)::text AS approved_recommendation_count,
         COALESCE(rec.dismissed_recommendation_count, 0)::text AS dismissed_recommendation_count,
@@ -1592,7 +1672,10 @@ export async function getSessionSummary(sessionId: string): Promise<SessionSumma
         SELECT
           COUNT(*) AS incident_count,
           COUNT(*) FILTER (WHERE status = 'open') AS open_incident_count,
-          COUNT(*) FILTER (WHERE status = 'resolved') AS resolved_incident_count
+          COUNT(*) FILTER (WHERE status = 'resolved') AS resolved_incident_count,
+          COUNT(*) FILTER (WHERE severity = 'critical') AS critical_incident_count,
+          COUNT(*) FILTER (WHERE severity = 'poor') AS poor_incident_count,
+          COUNT(*) FILTER (WHERE severity = 'degraded') AS degraded_incident_count
         FROM incidents
         WHERE session_id = $1
       ) inc ON TRUE
@@ -1872,6 +1955,203 @@ export async function listRecommendationActionTuning(
     [safeLimit],
   );
   return result.rows;
+}
+
+export async function listSessionWindowComparisons(): Promise<SessionWindowComparisonRow[]> {
+  const result = await runQuery<SessionWindowComparisonRow>(
+    `
+      WITH windows AS (
+        SELECT *
+        FROM (
+          VALUES
+            ('recent_24h', now() - interval '24 hours', now()),
+            ('prior_24h', now() - interval '48 hours', now() - interval '24 hours'),
+            ('recent_7d', now() - interval '7 days', now()),
+            ('prior_7d', now() - interval '14 days', now() - interval '7 days')
+        ) AS t(window_key, start_ts, end_ts)
+      ),
+      window_sessions AS (
+        SELECT
+          w.window_key,
+          s.id,
+          s.started_at
+        FROM windows w
+        LEFT JOIN sessions s
+          ON s.started_at >= w.start_ts
+         AND s.started_at < w.end_ts
+      )
+      SELECT
+        ws.window_key,
+        COUNT(DISTINCT ws.id)::text AS session_count,
+        COALESCE(SUM(inc.incident_count), 0)::text AS incident_count,
+        COALESCE(SUM(inc.open_incident_count), 0)::text AS open_incident_count,
+        COALESCE(SUM(inc.resolved_incident_count), 0)::text AS resolved_incident_count,
+        COALESCE(SUM(inc.critical_incident_count), 0)::text AS critical_incident_count,
+        COALESCE(SUM(inc.poor_incident_count), 0)::text AS poor_incident_count,
+        COALESCE(SUM(rec.recommendation_count), 0)::text AS recommendation_count,
+        CASE
+          WHEN COALESCE(SUM(rec.decided_count), 0) = 0 THEN '0'
+          ELSE ROUND((COALESCE(SUM(rec.approved_count), 0)::numeric / NULLIF(COALESCE(SUM(rec.decided_count), 0), 0)::numeric) * 100, 2)::text
+        END AS approval_rate_pct,
+        CASE
+          WHEN COALESCE(SUM(rec.recommendation_count), 0) = 0 THEN '0'
+          ELSE ROUND((COALESCE(SUM(rec.helpful_count), 0)::numeric / NULLIF(COALESCE(SUM(rec.recommendation_count), 0), 0)::numeric) * 100, 2)::text
+        END AS helpful_rate_pct
+      FROM window_sessions ws
+      LEFT JOIN LATERAL (
+        SELECT
+          COUNT(*) AS incident_count,
+          COUNT(*) FILTER (WHERE i.status = 'open') AS open_incident_count,
+          COUNT(*) FILTER (WHERE i.status = 'resolved') AS resolved_incident_count,
+          COUNT(*) FILTER (WHERE i.severity = 'critical') AS critical_incident_count,
+          COUNT(*) FILTER (WHERE i.severity = 'poor') AS poor_incident_count
+        FROM incidents i
+        WHERE i.session_id = ws.id
+      ) inc ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT
+          COUNT(*) AS recommendation_count,
+          COUNT(*) FILTER (WHERE r.status IN ('approved', 'dismissed')) AS decided_count,
+          COUNT(*) FILTER (WHERE r.status = 'approved') AS approved_count,
+          COUNT(*) FILTER (WHERE r.effectiveness_signal = 'helpful') AS helpful_count
+        FROM agent_recommendations r
+        JOIN incidents i ON i.id = r.incident_id
+        WHERE i.session_id = ws.id
+      ) rec ON TRUE
+      GROUP BY ws.window_key
+      ORDER BY
+        CASE ws.window_key
+          WHEN 'recent_24h' THEN 1
+          WHEN 'prior_24h' THEN 2
+          WHEN 'recent_7d' THEN 3
+          ELSE 4
+        END;
+    `,
+  );
+  return result.rows;
+}
+
+export async function listRecommendationActionDrilldowns(
+  limit = 12,
+): Promise<RecommendationActionDrilldownRow[]> {
+  const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(30, Math.floor(limit))) : 12;
+  const result = await runQuery<RecommendationActionDrilldownRow>(
+    `
+      WITH action_stats AS (
+        SELECT
+          r.action_type,
+          COUNT(*)::text AS total_count,
+          COUNT(*) FILTER (WHERE r.status = 'approved')::text AS approved_count,
+          COUNT(*) FILTER (WHERE r.status = 'dismissed')::text AS dismissed_count,
+          COUNT(*) FILTER (WHERE r.effectiveness_signal = 'helpful')::text AS helpful_count,
+          COUNT(*) FILTER (WHERE r.effectiveness_signal = 'not_helpful')::text AS not_helpful_count
+        FROM agent_recommendations r
+        GROUP BY r.action_type
+      )
+      SELECT
+        a.action_type,
+        a.total_count,
+        a.approved_count,
+        a.dismissed_count,
+        a.helpful_count,
+        a.not_helpful_count,
+        root.top_root_cause,
+        source.top_source_role,
+        source.top_source_type
+      FROM action_stats a
+      LEFT JOIN LATERAL (
+        SELECT i.root_cause AS top_root_cause
+        FROM agent_recommendations r
+        JOIN incidents i ON i.id = r.incident_id
+        WHERE r.action_type = a.action_type
+          AND COALESCE(NULLIF(i.root_cause, ''), '') <> ''
+        GROUP BY i.root_cause
+        ORDER BY COUNT(*) DESC, MAX(i.updated_at) DESC
+        LIMIT 1
+      ) root ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT
+          COALESCE(NULLIF(s.metadata->>'sourceRole', ''), 'unknown') AS top_source_role,
+          s.source_type AS top_source_type
+        FROM agent_recommendations r
+        JOIN incidents i ON i.id = r.incident_id
+        JOIN sessions s ON s.id = i.session_id
+        WHERE r.action_type = a.action_type
+        GROUP BY COALESCE(NULLIF(s.metadata->>'sourceRole', ''), 'unknown'), s.source_type
+        ORDER BY COUNT(*) DESC, MAX(r.created_at) DESC
+        LIMIT 1
+      ) source ON TRUE
+      ORDER BY a.total_count::numeric DESC, a.action_type
+      LIMIT $1;
+    `,
+    [safeLimit],
+  );
+  return result.rows;
+}
+
+export async function listSessionMediaRoleBreakdown(
+  sessionId: string,
+): Promise<SessionMediaRoleBreakdownRow[]> {
+  const result = await runQuery<SessionMediaRoleBreakdownRow>(
+    `
+      SELECT
+        COALESCE(NULLIF(me.raw_payload->>'sourceRole', ''), 'unknown') AS source_role,
+        COALESCE(NULLIF(me.raw_payload->>'streamDirection', ''), 'unknown') AS stream_direction,
+        COUNT(*)::text AS metric_events,
+        COUNT(*) FILTER (
+          WHERE me.metric_type LIKE '%video%'
+             OR me.metric_type IN ('frames_per_second', 'frame_width', 'frame_height', 'frame_drops_per_sec')
+        )::text AS video_metric_events,
+        COUNT(*) FILTER (
+          WHERE me.metric_type LIKE '%audio%'
+             OR me.metric_type IN ('audio_level')
+        )::text AS audio_metric_events,
+        COALESCE(MAX((me.raw_payload->>'outboundVideoTrackCount')::numeric), 0)::text AS max_outbound_video_tracks,
+        COALESCE(MAX((me.raw_payload->>'inboundVideoTrackCount')::numeric), 0)::text AS max_inbound_video_tracks,
+        COALESCE(MAX((me.raw_payload->>'outboundAudioTrackCount')::numeric), 0)::text AS max_outbound_audio_tracks,
+        COALESCE(MAX((me.raw_payload->>'inboundAudioTrackCount')::numeric), 0)::text AS max_inbound_audio_tracks
+      FROM metric_events me
+      WHERE me.session_id = $1
+      GROUP BY
+        COALESCE(NULLIF(me.raw_payload->>'sourceRole', ''), 'unknown'),
+        COALESCE(NULLIF(me.raw_payload->>'streamDirection', ''), 'unknown')
+      ORDER BY COUNT(*) DESC;
+    `,
+    [sessionId],
+  );
+  return result.rows;
+}
+
+export async function getSessionLatestNetworkInsight(
+  sessionId: string,
+): Promise<SessionLatestNetworkInsightRow | null> {
+  const result = await runQuery<SessionLatestNetworkInsightRow>(
+    `
+      SELECT
+        me.ts,
+        me.metric_type,
+        NULLIF(me.raw_payload->>'candidatePairState', '') AS candidate_pair_state,
+        NULLIF(me.raw_payload->>'localCandidateType', '') AS local_candidate_type,
+        NULLIF(me.raw_payload->>'remoteCandidateType', '') AS remote_candidate_type,
+        NULLIF(me.raw_payload->>'networkType', '') AS network_type,
+        NULLIF(me.raw_payload->>'relayProtocol', '') AS relay_protocol,
+        NULLIF(me.raw_payload->>'candidateTransportProtocol', '') AS candidate_transport_protocol,
+        me.raw_payload->>'availableOutgoingBitrateKbps' AS available_outgoing_bitrate_kbps,
+        me.raw_payload->>'roundTripTimeMs' AS rtt_ms
+      FROM metric_events me
+      WHERE me.session_id = $1
+        AND (
+          me.metric_type IN ('available_outgoing_bitrate_kbps', 'candidate_pair_state', 'rtt_ms')
+          OR me.raw_payload ? 'candidatePairState'
+          OR me.raw_payload ? 'localCandidateType'
+          OR me.raw_payload ? 'remoteCandidateType'
+        )
+      ORDER BY me.ts DESC
+      LIMIT 1;
+    `,
+    [sessionId],
+  );
+  return result.rows[0] ?? null;
 }
 
 export async function decideRecommendation(input: {

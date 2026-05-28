@@ -33,6 +33,13 @@ interface MinimalAudioSourceStats extends RTCStats {
   audioLevel?: number;
 }
 
+interface MinimalIceCandidateStats extends RTCStats {
+  candidateType?: string;
+  networkType?: string;
+  relayProtocol?: string;
+  protocol?: string;
+}
+
 interface MetricEmission {
   metricType: MetricType;
   value: number;
@@ -47,6 +54,16 @@ interface StatSelection {
   remoteInboundAudio?: MinimalRemoteInboundStats;
   audioSource?: MinimalAudioSourceStats;
   candidatePair?: RTCIceCandidatePairStats;
+  localCandidate?: MinimalIceCandidateStats;
+  remoteCandidate?: MinimalIceCandidateStats;
+  outboundVideoTrackCount: number;
+  inboundVideoTrackCount: number;
+  outboundAudioTrackCount: number;
+  inboundAudioTrackCount: number;
+  outboundVideoTrackId?: string;
+  inboundVideoTrackId?: string;
+  outboundAudioTrackId?: string;
+  inboundAudioTrackId?: string;
 }
 
 export interface SessionClientOptions {
@@ -96,6 +113,11 @@ function statKind(stat: RTCStats): string | undefined {
     (stat as { kind?: unknown; mediaType?: unknown }).kind ??
     (stat as { mediaType?: unknown }).mediaType;
   return typeof value === 'string' ? value : undefined;
+}
+
+function statTrackIdentifier(stat: RTCStats): string | undefined {
+  const value = (stat as { trackIdentifier?: unknown }).trackIdentifier;
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
 function toFinite(value: unknown): number | undefined {
@@ -191,7 +213,18 @@ function candidatePairPreference(stat: RTCIceCandidatePairStats): number {
   const nominated = stat.nominated ? 2 : 0;
   const selected = (stat as RTCIceCandidatePairStats & { selected?: boolean }).selected ? 1 : 0;
   const succeeded = stat.state === 'succeeded' ? 1 : 0;
-  return nominated + selected + succeeded;
+  const writable = stat.writable ? 1 : 0;
+  const availableOutgoingBitrate = toFinite(stat.availableOutgoingBitrate) ?? 0;
+  return nominated + selected + succeeded + writable + availableOutgoingBitrate / 10_000_000;
+}
+
+function metricValueForCandidatePairState(state: string | undefined): number {
+  if (state === 'frozen') return 0;
+  if (state === 'waiting') return 1;
+  if (state === 'in-progress') return 2;
+  if (state === 'failed') return 3;
+  if (state === 'succeeded') return 4;
+  return -1;
 }
 
 function pickStats(report: RTCStatsReport): StatSelection {
@@ -203,23 +236,47 @@ function pickStats(report: RTCStatsReport): StatSelection {
   let remoteInboundAudio: MinimalRemoteInboundStats | undefined;
   let audioSource: MinimalAudioSourceStats | undefined;
   let candidatePair: RTCIceCandidatePairStats | undefined;
+  let outboundVideoTrackCount = 0;
+  let inboundVideoTrackCount = 0;
+  let outboundAudioTrackCount = 0;
+  let inboundAudioTrackCount = 0;
+  let outboundVideoTrackId: string | undefined;
+  let inboundVideoTrackId: string | undefined;
+  let outboundAudioTrackId: string | undefined;
+  let inboundAudioTrackId: string | undefined;
 
   for (const stat of reportEntries(report)) {
     const statType = (stat as RTCStats & { type: string }).type;
     if (statType === 'outbound-rtp' && statKind(stat) === 'video' && !outboundVideo) {
       outboundVideo = stat as RTCOutboundRtpStreamStats;
+    }
+    if (statType === 'outbound-rtp' && statKind(stat) === 'video') {
+      outboundVideoTrackCount += 1;
+      outboundVideoTrackId = outboundVideoTrackId ?? statTrackIdentifier(stat);
       continue;
     }
     if (statType === 'inbound-rtp' && statKind(stat) === 'video' && !inboundVideo) {
       inboundVideo = stat as RTCInboundRtpStreamStats;
+    }
+    if (statType === 'inbound-rtp' && statKind(stat) === 'video') {
+      inboundVideoTrackCount += 1;
+      inboundVideoTrackId = inboundVideoTrackId ?? statTrackIdentifier(stat);
       continue;
     }
     if (statType === 'outbound-rtp' && statKind(stat) === 'audio' && !outboundAudio) {
       outboundAudio = stat as RTCOutboundRtpStreamStats;
+    }
+    if (statType === 'outbound-rtp' && statKind(stat) === 'audio') {
+      outboundAudioTrackCount += 1;
+      outboundAudioTrackId = outboundAudioTrackId ?? statTrackIdentifier(stat);
       continue;
     }
     if (statType === 'inbound-rtp' && statKind(stat) === 'audio' && !inboundAudio) {
       inboundAudio = stat as RTCInboundRtpStreamStats;
+    }
+    if (statType === 'inbound-rtp' && statKind(stat) === 'audio') {
+      inboundAudioTrackCount += 1;
+      inboundAudioTrackId = inboundAudioTrackId ?? statTrackIdentifier(stat);
       continue;
     }
     if (!audioSource && statType === 'media-source' && statKind(stat) === 'audio') {
@@ -240,6 +297,14 @@ function pickStats(report: RTCStatsReport): StatSelection {
   if (outboundAudio) {
     remoteInboundAudio = asStat<MinimalRemoteInboundStats>(report, outboundAudio.remoteId);
   }
+  const localCandidate = asStat<MinimalIceCandidateStats>(
+    report,
+    (candidatePair as RTCIceCandidatePairStats & { localCandidateId?: string } | undefined)?.localCandidateId,
+  );
+  const remoteCandidate = asStat<MinimalIceCandidateStats>(
+    report,
+    (candidatePair as RTCIceCandidatePairStats & { remoteCandidateId?: string } | undefined)?.remoteCandidateId,
+  );
 
   return {
     outboundVideo,
@@ -250,6 +315,16 @@ function pickStats(report: RTCStatsReport): StatSelection {
     remoteInboundAudio,
     audioSource,
     candidatePair,
+    localCandidate,
+    remoteCandidate,
+    outboundVideoTrackCount,
+    inboundVideoTrackCount,
+    outboundAudioTrackCount,
+    inboundAudioTrackCount,
+    outboundVideoTrackId,
+    inboundVideoTrackId,
+    outboundAudioTrackId,
+    inboundAudioTrackId,
   };
 }
 
@@ -524,6 +599,40 @@ export function createSessionClient(
         'available_outgoing_bitrate_kbps',
         typeof availableOutgoingBitrateKbps === 'number' ? availableOutgoingBitrateKbps / 1000 : undefined,
       );
+      snapshot.outboundVideoTrackCount = selected.outboundVideoTrackCount;
+      snapshot.inboundVideoTrackCount = selected.inboundVideoTrackCount;
+      snapshot.outboundAudioTrackCount = selected.outboundAudioTrackCount;
+      snapshot.inboundAudioTrackCount = selected.inboundAudioTrackCount;
+      snapshot.outboundVideoTrackId = selected.outboundVideoTrackId;
+      snapshot.inboundVideoTrackId = selected.inboundVideoTrackId;
+      snapshot.outboundAudioTrackId = selected.outboundAudioTrackId;
+      snapshot.inboundAudioTrackId = selected.inboundAudioTrackId;
+      emitMetric(metrics, 'outbound_video_track_count', selected.outboundVideoTrackCount);
+      emitMetric(metrics, 'inbound_video_track_count', selected.inboundVideoTrackCount);
+      emitMetric(metrics, 'outbound_audio_track_count', selected.outboundAudioTrackCount);
+      emitMetric(metrics, 'inbound_audio_track_count', selected.inboundAudioTrackCount);
+
+      snapshot.candidatePairState = selected.candidatePair?.state;
+      snapshot.candidateSelected = Boolean(
+        (selected.candidatePair as RTCIceCandidatePairStats & { selected?: boolean } | undefined)?.selected,
+      );
+      snapshot.candidateNominated = Boolean(selected.candidatePair?.nominated);
+      snapshot.candidateWritable = Boolean(selected.candidatePair?.writable);
+      snapshot.selectedCandidatePairId = selected.candidatePair?.id;
+      snapshot.localCandidateType = selected.localCandidate?.candidateType;
+      snapshot.remoteCandidateType = selected.remoteCandidate?.candidateType;
+      snapshot.networkType = selected.localCandidate?.networkType ?? selected.remoteCandidate?.networkType;
+      snapshot.relayProtocol = selected.localCandidate?.relayProtocol ?? selected.remoteCandidate?.relayProtocol;
+      snapshot.candidateTransportProtocol =
+        selected.localCandidate?.protocol ?? selected.remoteCandidate?.protocol;
+      emitMetric(
+        metrics,
+        'candidate_pair_state',
+        metricValueForCandidatePairState(selected.candidatePair?.state),
+      );
+      emitMetric(metrics, 'candidate_selected', snapshot.candidateSelected ? 1 : 0);
+      emitMetric(metrics, 'candidate_nominated', snapshot.candidateNominated ? 1 : 0);
+      emitMetric(metrics, 'candidate_writable', snapshot.candidateWritable ? 1 : 0);
 
       snapshot.connectionState = peerConnection.connectionState;
       emitMetric(metrics, 'connection_state', metricValueForConnectionState(peerConnection.connectionState));

@@ -8,11 +8,12 @@ import {
   listIncidentSeverityDistribution,
   listRecentIncidents,
   type RecommendationFeedRow,
+  listRecommendationActionDrilldowns,
   listRecentRecommendations,
-  listRecommendationActionTuning,
   listRecentSessionStatus,
   listSessionCohorts,
   listSessionComparisons,
+  listSessionWindowComparisons,
   listSessionSourceTrends,
 } from '@stream-pulse/db';
 import Link from 'next/link';
@@ -59,6 +60,36 @@ function toInt(value: string | null | undefined): number {
   if (!value) return 0;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function sessionHealthFromRow(input: {
+  finalQoeScore: string | null;
+  finalQoeSeverity: string | null;
+  incidentCount: string | null | undefined;
+  approvedCount: string | null | undefined;
+  helpfulCount: string | null | undefined;
+  notHelpfulCount: string | null | undefined;
+}): { grade: 'A' | 'B' | 'C' | 'D' | 'E' | 'F'; label: string; score: number } {
+  const qoe = toInt(input.finalQoeScore);
+  const incidents = toInt(input.incidentCount);
+  const approved = toInt(input.approvedCount);
+  const helpful = toInt(input.helpfulCount);
+  const notHelpful = toInt(input.notHelpfulCount);
+  const severityPenalty =
+    input.finalQoeSeverity === 'critical'
+      ? 18
+      : input.finalQoeSeverity === 'poor'
+        ? 12
+        : input.finalQoeSeverity === 'degraded'
+          ? 6
+          : 0;
+  const score = Math.max(0, Math.min(100, qoe - incidents * 4 - severityPenalty + approved + helpful * 2 - notHelpful * 3));
+  if (score >= 90) return { grade: 'A', label: 'Excellent', score };
+  if (score >= 80) return { grade: 'B', label: 'Good', score };
+  if (score >= 70) return { grade: 'C', label: 'Fair', score };
+  if (score >= 60) return { grade: 'D', label: 'Poor', score };
+  if (score >= 50) return { grade: 'E', label: 'Critical', score };
+  return { grade: 'F', label: 'Failing', score };
 }
 
 function asObject(value: unknown): Record<string, unknown> | null {
@@ -160,7 +191,8 @@ export default async function Home() {
     sourceTrends,
     decisionTrend,
     effectivenessTrend,
-    actionTuning,
+    actionDrilldowns,
+    windowComparisons,
   ] = await Promise.all([
     listRecentSessionStatus(25).catch(() => []),
     listRecentIncidents(25).catch(() => []),
@@ -182,7 +214,8 @@ export default async function Home() {
       unconfirmed_count: '0',
       unknown_count: '0',
     })),
-    listRecommendationActionTuning(10).catch(() => []),
+    listRecommendationActionDrilldowns(10).catch(() => []),
+    listSessionWindowComparisons().catch(() => []),
   ]);
 
   return (
@@ -193,6 +226,10 @@ export default async function Home() {
         Session QoE, incidents, recommendation lifecycle, and cross-session reporting view. Open a
         session timeline for replay, export, and audit details. Refreshes every 5 seconds. Use the{' '}
         <Link href="/demo/webrtc">WebRTC demo page</Link> to ingest real browser getStats telemetry.
+      </p>
+      <p>
+        Quick exports: open any session row and use JSON/Markdown report download links for post-session
+        handoff.
       </p>
 
       <h2>Recent Sessions ({sessions.length})</h2>
@@ -224,6 +261,7 @@ export default async function Home() {
                 'Latest Event Time',
                 'QoE Score',
                 'QoE Severity',
+                'Health Grade',
                 'QoE Updated',
                 'Replay',
                 'Report',
@@ -298,16 +336,82 @@ export default async function Home() {
                   )}
                 </td>
                 <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  {(() => {
+                    const health = sessionHealthFromRow({
+                      finalQoeScore: session.latest_qoe_score,
+                      finalQoeSeverity: session.latest_qoe_severity,
+                      incidentCount: session.incident_count,
+                      approvedCount: session.approved_count,
+                      helpfulCount: session.helpful_count,
+                      notHelpfulCount: session.not_helpful_count,
+                    });
+                    return (
+                      <span title={`${health.label} (${health.score})`}>
+                        {health.grade}
+                      </span>
+                    );
+                  })()}
+                </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
                   {formatTimestamp(session.latest_qoe_end_ts)}
                 </td>
                 <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
                   <Link href={`/sessions/${session.id}`}>Open Timeline</Link>
                 </td>
                 <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
-                  <a href={`/api/reports/session/${session.id}?format=json`} target="_blank" rel="noreferrer">
-                    Export JSON
-                  </a>
+                  <div style={{ display: 'grid', gap: '0.2rem' }}>
+                    <a href={`/api/reports/session/${session.id}?format=json`} target="_blank" rel="noreferrer" download>
+                      Download JSON
+                    </a>
+                    <a href={`/api/reports/session/${session.id}?format=md`} target="_blank" rel="noreferrer" download>
+                      Download MD
+                    </a>
+                  </div>
                 </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      <h2 style={{ marginTop: '2rem' }}>Time-Window Comparison ({windowComparisons.length})</h2>
+      {windowComparisons.length === 0 ? (
+        <p>No window comparison rows yet.</p>
+      ) : (
+        <table style={{ borderCollapse: 'collapse', width: '100%', border: '1px solid #ddd' }}>
+          <thead>
+            <tr>
+              {[
+                'Window',
+                'Sessions',
+                'Incidents',
+                'Open/Resolved',
+                'Critical/Poor',
+                'Recommendations',
+                'Approval Rate',
+                'Helpful Rate',
+              ].map((heading) => (
+                <th key={heading} style={{ border: '1px solid #ddd', padding: '0.5rem', textAlign: 'left' }}>
+                  {heading}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {windowComparisons.map((row) => (
+              <tr key={row.window_key}>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>{row.window_key}</td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>{row.session_count}</td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>{row.incident_count}</td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  {row.open_incident_count} / {row.resolved_incident_count}
+                </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  {row.critical_incident_count} / {row.poor_incident_count}
+                </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>{row.recommendation_count}</td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>{row.approval_rate_pct}%</td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>{row.helpful_rate_pct}%</td>
               </tr>
             ))}
           </tbody>
@@ -330,6 +434,7 @@ export default async function Home() {
                 'Incidents',
                 'Dominant Root Cause',
                 'Final QoE',
+                'Health',
                 'Recommendations',
                 'Helpful / Not Helpful',
               ].map((heading) => (
@@ -358,6 +463,19 @@ export default async function Home() {
                 <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>{row.dominant_root_cause ?? '—'}</td>
                 <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
                   {row.final_qoe_score ?? '—'} ({row.final_qoe_severity ?? '—'})
+                </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  {(() => {
+                    const health = sessionHealthFromRow({
+                      finalQoeScore: row.final_qoe_score,
+                      finalQoeSeverity: row.final_qoe_severity,
+                      incidentCount: row.incident_count,
+                      approvedCount: row.approved_count,
+                      helpfulCount: row.helpful_count,
+                      notHelpfulCount: row.not_helpful_count,
+                    });
+                    return <span title={`${health.label} (${health.score})`}>{health.grade}</span>;
+                  })()}
                 </td>
                 <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
                   {row.recommendation_count} ({row.approved_count} approved / {row.dismissed_count} dismissed)
@@ -459,8 +577,8 @@ export default async function Home() {
         </div>
       </div>
 
-      <h2 style={{ marginTop: '2rem' }}>Recommendation Tuning Feedback ({actionTuning.length})</h2>
-      {actionTuning.length === 0 ? (
+      <h2 style={{ marginTop: '2rem' }}>Recommendation Action Drilldowns ({actionDrilldowns.length})</h2>
+      {actionDrilldowns.length === 0 ? (
         <p>No recommendation action feedback rows yet.</p>
       ) : (
         <table style={{ borderCollapse: 'collapse', width: '100%', border: '1px solid #ddd' }}>
@@ -475,6 +593,8 @@ export default async function Home() {
                 'Not Helpful',
                 'Approval Rate',
                 'Helpful Rate',
+                'Top Root Cause Pattern',
+                'Top Source Pattern',
               ].map((heading) => (
                 <th key={heading} style={{ border: '1px solid #ddd', padding: '0.5rem', textAlign: 'left' }}>
                   {heading}
@@ -483,7 +603,7 @@ export default async function Home() {
             </tr>
           </thead>
           <tbody>
-            {actionTuning.map((row) => {
+            {actionDrilldowns.map((row) => {
               const total = Math.max(1, toInt(row.total_count));
               const approvedRate = ((toInt(row.approved_count) / total) * 100).toFixed(1);
               const helpfulRate = ((toInt(row.helpful_count) / total) * 100).toFixed(1);
@@ -497,6 +617,10 @@ export default async function Home() {
                   <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>{row.not_helpful_count}</td>
                   <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>{approvedRate}%</td>
                   <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>{helpfulRate}%</td>
+                  <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>{row.top_root_cause ?? '—'}</td>
+                  <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                    {row.top_source_type ?? '—'} / {row.top_source_role ?? '—'}
+                  </td>
                 </tr>
               );
             })}

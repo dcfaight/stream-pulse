@@ -4,19 +4,47 @@ import type { MetricType, StatSnapshot } from '@stream-pulse/types';
 const DEFAULT_INTERVAL_MS = 2000;
 const DEFAULT_INGESTOR_URL = 'http://localhost:4001';
 const DEFAULT_BROADCASTER_ID = 'browser-demo-broadcaster';
+const DEFAULT_SOURCE_TYPE = 'browser-demo';
 
 interface SessionClientConfig {
   intervalMs: number;
   ingestorUrl: string;
   sessionId: string;
   broadcasterId: string;
+  sourceType: string;
+  sourceLabel: string;
+  runtimeLabel: string;
+  sessionLabel: string;
+  broadcasterRole: string;
 }
 
-interface MinimalRemoteInboundVideoStats extends RTCStats {
+interface MinimalRemoteInboundStats extends RTCStats {
   packetsLost?: number;
   fractionLost?: number;
   roundTripTime?: number;
   jitter?: number;
+}
+
+interface MinimalTrackStats extends RTCStats {
+  kind?: string;
+  mediaType?: string;
+  audioLevel?: number;
+}
+
+interface MetricEmission {
+  metricType: MetricType;
+  value: number;
+}
+
+interface StatSelection {
+  outboundVideo?: RTCOutboundRtpStreamStats;
+  inboundVideo?: RTCInboundRtpStreamStats;
+  remoteInboundVideo?: MinimalRemoteInboundStats;
+  outboundAudio?: RTCOutboundRtpStreamStats;
+  inboundAudio?: RTCInboundRtpStreamStats;
+  remoteInboundAudio?: MinimalRemoteInboundStats;
+  audioTrack?: MinimalTrackStats;
+  candidatePair?: RTCIceCandidatePairStats;
 }
 
 export interface SessionClientOptions {
@@ -24,7 +52,13 @@ export interface SessionClientOptions {
   ingestorUrl?: string;
   sessionId?: string;
   broadcasterId?: string;
+  sourceType?: string;
+  sourceLabel?: string;
+  runtimeLabel?: string;
+  sessionLabel?: string;
+  broadcasterRole?: string;
   fetchImpl?: typeof fetch;
+  onMetric?: (metric: { metricType: MetricType; value: number; ts: number; snapshot: StatSnapshot }) => void;
   onError?: (error: unknown) => void;
 }
 
@@ -54,7 +88,8 @@ function metricValueForConnectionState(state: RTCPeerConnectionState): number {
 }
 
 function statKind(stat: RTCStats): string | undefined {
-  const value = (stat as { kind?: unknown; mediaType?: unknown }).kind ??
+  const value =
+    (stat as { kind?: unknown; mediaType?: unknown }).kind ??
     (stat as { mediaType?: unknown }).mediaType;
   return typeof value === 'string' ? value : undefined;
 }
@@ -66,6 +101,30 @@ function toFinite(value: unknown): number | undefined {
 function toMsFromSeconds(value: number | undefined): number | undefined {
   if (typeof value !== 'number') return undefined;
   return value * 1000;
+}
+
+function round(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+function asLabel(value: string | undefined, fallback: string): string {
+  const normalized = value?.trim();
+  return normalized ? normalized : fallback;
+}
+
+function inferBrowserName(): string {
+  if (typeof navigator === 'undefined') return 'unknown';
+  const ua = navigator.userAgent;
+  if (/Edg\//.test(ua)) return 'edge';
+  if (/Chrome\//.test(ua)) return 'chrome';
+  if (/Firefox\//.test(ua)) return 'firefox';
+  if (/Safari\//.test(ua) && !/Chrome\//.test(ua)) return 'safari';
+  return 'unknown';
+}
+
+function inferRuntimeLabel(): string {
+  if (typeof navigator === 'undefined') return 'browser:unknown';
+  return `browser:${navigator.userAgent}`.slice(0, 180);
 }
 
 function reportEntries(report: RTCStatsReport): RTCStats[] {
@@ -89,62 +148,91 @@ function reportGet(report: RTCStatsReport, id: string): RTCStats | undefined {
 
 function asStat<T extends RTCStats>(report: RTCStatsReport, id: string | undefined): T | undefined {
   if (!id) return undefined;
-  const value = reportGet(report, id);
-  return value as T | undefined;
+  return reportGet(report, id) as T | undefined;
 }
 
-function pickVideoStats(report: RTCStatsReport): {
-  outboundVideo?: RTCOutboundRtpStreamStats;
-  inboundVideo?: RTCInboundRtpStreamStats;
-  remoteInboundVideo?: MinimalRemoteInboundVideoStats;
-  candidatePair?: RTCIceCandidatePairStats;
-} {
+function candidatePairPreference(stat: RTCIceCandidatePairStats): number {
+  const nominated = stat.nominated ? 2 : 0;
+  const selected = (stat as RTCIceCandidatePairStats & { selected?: boolean }).selected ? 1 : 0;
+  const succeeded = stat.state === 'succeeded' ? 1 : 0;
+  return nominated + selected + succeeded;
+}
+
+function pickStats(report: RTCStatsReport): StatSelection {
   let outboundVideo: RTCOutboundRtpStreamStats | undefined;
   let inboundVideo: RTCInboundRtpStreamStats | undefined;
-  let remoteInboundVideo: MinimalRemoteInboundVideoStats | undefined;
+  let remoteInboundVideo: MinimalRemoteInboundStats | undefined;
+  let outboundAudio: RTCOutboundRtpStreamStats | undefined;
+  let inboundAudio: RTCInboundRtpStreamStats | undefined;
+  let remoteInboundAudio: MinimalRemoteInboundStats | undefined;
+  let audioTrack: MinimalTrackStats | undefined;
   let candidatePair: RTCIceCandidatePairStats | undefined;
 
   for (const stat of reportEntries(report)) {
-    if (
-      !outboundVideo &&
-      stat.type === 'outbound-rtp' &&
-      statKind(stat) === 'video'
-    ) {
+    if (stat.type === 'outbound-rtp' && statKind(stat) === 'video' && !outboundVideo) {
       outboundVideo = stat as RTCOutboundRtpStreamStats;
       continue;
     }
-    if (
-      !inboundVideo &&
-      stat.type === 'inbound-rtp' &&
-      statKind(stat) === 'video'
-    ) {
+    if (stat.type === 'inbound-rtp' && statKind(stat) === 'video' && !inboundVideo) {
       inboundVideo = stat as RTCInboundRtpStreamStats;
       continue;
     }
-    if (
-      !candidatePair &&
-      stat.type === 'candidate-pair' &&
-      (stat as RTCIceCandidatePairStats).state === 'succeeded' &&
-      (stat as RTCIceCandidatePairStats).nominated
-    ) {
-      candidatePair = stat as RTCIceCandidatePairStats;
+    if (stat.type === 'outbound-rtp' && statKind(stat) === 'audio' && !outboundAudio) {
+      outboundAudio = stat as RTCOutboundRtpStreamStats;
       continue;
+    }
+    if (stat.type === 'inbound-rtp' && statKind(stat) === 'audio' && !inboundAudio) {
+      inboundAudio = stat as RTCInboundRtpStreamStats;
+      continue;
+    }
+    if (!audioTrack && stat.type === 'track' && statKind(stat) === 'audio') {
+      audioTrack = stat as MinimalTrackStats;
+      continue;
+    }
+    if (stat.type === 'candidate-pair') {
+      const pair = stat as RTCIceCandidatePairStats;
+      if (!candidatePair || candidatePairPreference(pair) > candidatePairPreference(candidatePair)) {
+        candidatePair = pair;
+      }
     }
   }
 
   if (outboundVideo) {
-    remoteInboundVideo = asStat<MinimalRemoteInboundVideoStats>(report, outboundVideo.remoteId);
+    remoteInboundVideo = asStat<MinimalRemoteInboundStats>(report, outboundVideo.remoteId);
+  }
+  if (outboundAudio) {
+    remoteInboundAudio = asStat<MinimalRemoteInboundStats>(report, outboundAudio.remoteId);
   }
 
-  return { outboundVideo, inboundVideo, remoteInboundVideo, candidatePair };
+  return {
+    outboundVideo,
+    inboundVideo,
+    remoteInboundVideo,
+    outboundAudio,
+    inboundAudio,
+    remoteInboundAudio,
+    audioTrack,
+    candidatePair,
+  };
 }
 
-function buildSnapshot(sessionId: string, connectionState: RTCPeerConnectionState): StatSnapshot {
+function buildSnapshot(config: SessionClientConfig, connectionState: RTCPeerConnectionState): StatSnapshot {
   return {
-    sessionId,
+    sessionId: config.sessionId,
     ts: Date.now(),
     connectionState,
+    sourceType: config.sourceType,
+    sourceLabel: config.sourceLabel,
+    runtimeLabel: config.runtimeLabel,
+    sessionLabel: config.sessionLabel,
+    broadcasterRole: config.broadcasterRole,
+    browserName: inferBrowserName(),
   };
+}
+
+function emitMetric(metrics: MetricEmission[], metricType: MetricType, value: number | undefined): void {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return;
+  metrics.push({ metricType, value: round(value) });
 }
 
 export function createSessionClient(
@@ -160,15 +248,19 @@ export function createSessionClient(
     ingestorUrl: options?.ingestorUrl ?? DEFAULT_INGESTOR_URL,
     sessionId: resolveSessionId(options?.sessionId),
     broadcasterId: options?.broadcasterId ?? DEFAULT_BROADCASTER_ID,
+    sourceType: asLabel(options?.sourceType, DEFAULT_SOURCE_TYPE),
+    sourceLabel: asLabel(options?.sourceLabel, 'local-loopback'),
+    runtimeLabel: asLabel(options?.runtimeLabel, inferRuntimeLabel()),
+    sessionLabel: asLabel(options?.sessionLabel, 'Browser Telemetry Demo'),
+    broadcasterRole: asLabel(options?.broadcasterRole, 'publisher'),
   };
   let timer: ReturnType<typeof setInterval> | null = null;
   let polling = false;
   let previous: {
     ts: number;
-    videoBytes?: number;
-    packetsLost?: number;
-    packetsSent?: number;
-    packetsReceived?: number;
+    videoBytesSent?: number;
+    videoBytesReceived?: number;
+    audioBytesSent?: number;
     frameDrops?: number;
   } | null = null;
 
@@ -185,6 +277,10 @@ export function createSessionClient(
       body: JSON.stringify({
         sessionId: config.sessionId,
         broadcasterId: config.broadcasterId,
+        sourceType: config.sourceType,
+        sourceLabel: config.sourceLabel,
+        runtimeLabel: config.runtimeLabel,
+        sessionLabel: config.sessionLabel,
         metricType,
         value,
         ts,
@@ -203,18 +299,26 @@ export function createSessionClient(
     polling = true;
     try {
       const report = await peerConnection.getStats();
-      const selected = pickVideoStats(report);
+      const selected = pickStats(report);
       const now = Date.now();
-      const snapshot = buildSnapshot(config.sessionId, peerConnection.connectionState);
-      const metrics: Array<{ metricType: MetricType; value: number }> = [];
+      const snapshot = buildSnapshot(config, peerConnection.connectionState);
+      const metrics: MetricEmission[] = [];
 
-      const outboundBytes = toFinite(selected.outboundVideo?.bytesSent);
-      const inboundBytes = toFinite(selected.inboundVideo?.bytesReceived);
-      const videoBytes = outboundBytes ?? inboundBytes;
-      if (typeof videoBytes === 'number') {
-        snapshot.videoBytesSent = outboundBytes;
-        snapshot.videoBytesReceived = inboundBytes;
+      const outboundVideoBytes = toFinite(selected.outboundVideo?.bytesSent);
+      const inboundVideoBytes = toFinite(selected.inboundVideo?.bytesReceived);
+      const outboundAudioBytes = toFinite(selected.outboundAudio?.bytesSent);
+      const inboundAudioBytes = toFinite(selected.inboundAudio?.bytesReceived);
+
+      if (typeof outboundVideoBytes === 'number') {
+        snapshot.videoBytesSent = outboundVideoBytes;
+        emitMetric(metrics, 'bytes_sent_video', outboundVideoBytes);
       }
+      if (typeof inboundVideoBytes === 'number') {
+        snapshot.videoBytesReceived = inboundVideoBytes;
+        emitMetric(metrics, 'bytes_received_video', inboundVideoBytes);
+      }
+      if (typeof outboundAudioBytes === 'number') snapshot.audioBytesSent = outboundAudioBytes;
+      if (typeof inboundAudioBytes === 'number') snapshot.audioBytesReceived = inboundAudioBytes;
 
       const packetsSent = toFinite(selected.outboundVideo?.packetsSent);
       const inboundPacketsLost = toFinite(selected.inboundVideo?.packetsLost);
@@ -233,26 +337,79 @@ export function createSessionClient(
       );
       if (typeof jitterMs === 'number') {
         snapshot.jitterMs = jitterMs;
-        metrics.push({ metricType: 'jitter_ms', value: Math.round(jitterMs * 100) / 100 });
+        emitMetric(metrics, 'jitter_ms', jitterMs);
       }
 
       const rttMs = toMsFromSeconds(
         toFinite(selected.remoteInboundVideo?.roundTripTime) ??
+          toFinite(selected.remoteInboundAudio?.roundTripTime) ??
           toFinite(selected.candidatePair?.currentRoundTripTime),
       );
       if (typeof rttMs === 'number') {
         snapshot.roundTripTimeMs = rttMs;
-        metrics.push({ metricType: 'rtt_ms', value: Math.round(rttMs * 100) / 100 });
+        emitMetric(metrics, 'rtt_ms', rttMs);
       }
 
-      if (previous && typeof videoBytes === 'number' && now > previous.ts && previous.videoBytes != null) {
+      const framesPerSecond =
+        toFinite(
+          (selected.outboundVideo as (RTCOutboundRtpStreamStats & { framesPerSecond?: number }) | undefined)
+            ?.framesPerSecond,
+        ) ??
+        toFinite(
+          (selected.inboundVideo as (RTCInboundRtpStreamStats & { framesPerSecond?: number }) | undefined)
+            ?.framesPerSecond,
+        );
+      if (typeof framesPerSecond === 'number') {
+        snapshot.framesPerSecond = framesPerSecond;
+        emitMetric(metrics, 'frames_per_second', framesPerSecond);
+      }
+
+      const frameWidth =
+        toFinite(
+          (selected.outboundVideo as (RTCOutboundRtpStreamStats & { frameWidth?: number }) | undefined)
+            ?.frameWidth,
+        ) ??
+        toFinite(
+          (selected.inboundVideo as (RTCInboundRtpStreamStats & { frameWidth?: number }) | undefined)
+            ?.frameWidth,
+        );
+      const frameHeight =
+        toFinite(
+          (selected.outboundVideo as (RTCOutboundRtpStreamStats & { frameHeight?: number }) | undefined)
+            ?.frameHeight,
+        ) ??
+        toFinite(
+          (selected.inboundVideo as (RTCInboundRtpStreamStats & { frameHeight?: number }) | undefined)
+            ?.frameHeight,
+        );
+      if (typeof frameWidth === 'number') {
+        snapshot.frameWidth = frameWidth;
+        emitMetric(metrics, 'frame_width', frameWidth);
+      }
+      if (typeof frameHeight === 'number') {
+        snapshot.frameHeight = frameHeight;
+        emitMetric(metrics, 'frame_height', frameHeight);
+      }
+
+      if (
+        previous &&
+        now > previous.ts &&
+        previous.videoBytesSent != null &&
+        typeof outboundVideoBytes === 'number'
+      ) {
         const elapsedSeconds = (now - previous.ts) / 1000;
-        const deltaBytes = Math.max(0, videoBytes - previous.videoBytes);
-        const bitrateVideoKbps = (deltaBytes * 8) / 1000 / elapsedSeconds;
-        metrics.push({
-          metricType: 'bitrate_video_kbps',
-          value: Math.round(bitrateVideoKbps * 100) / 100,
-        });
+        const deltaBytes = Math.max(0, outboundVideoBytes - previous.videoBytesSent);
+        emitMetric(metrics, 'bitrate_video_kbps', (deltaBytes * 8) / 1000 / elapsedSeconds);
+      }
+      if (
+        previous &&
+        now > previous.ts &&
+        previous.audioBytesSent != null &&
+        typeof outboundAudioBytes === 'number'
+      ) {
+        const elapsedSeconds = (now - previous.ts) / 1000;
+        const deltaBytes = Math.max(0, outboundAudioBytes - previous.audioBytesSent);
+        emitMetric(metrics, 'bitrate_audio_kbps', (deltaBytes * 8) / 1000 / elapsedSeconds);
       }
 
       const frameDrops = toFinite(
@@ -263,10 +420,18 @@ export function createSessionClient(
       if (previous && typeof frameDrops === 'number' && now > previous.ts && previous.frameDrops != null) {
         const elapsedSeconds = (now - previous.ts) / 1000;
         const deltaDrops = Math.max(0, frameDrops - previous.frameDrops);
-        metrics.push({
-          metricType: 'frame_drops_per_sec',
-          value: Math.round((deltaDrops / elapsedSeconds) * 100) / 100,
-        });
+        emitMetric(metrics, 'frame_drops_per_sec', deltaDrops / elapsedSeconds);
+      }
+
+      const audioLevel =
+        toFinite(selected.audioTrack?.audioLevel) ??
+        toFinite(
+          (selected.inboundAudio as (RTCInboundRtpStreamStats & { audioLevel?: number }) | undefined)
+            ?.audioLevel,
+        );
+      if (typeof audioLevel === 'number') {
+        snapshot.audioLevel = audioLevel;
+        emitMetric(metrics, 'audio_level', audioLevel);
       }
 
       const packetLossPct =
@@ -277,29 +442,21 @@ export function createSessionClient(
             : typeof fractionLost === 'number'
               ? fractionLost * 100
               : undefined;
-      if (typeof packetLossPct === 'number') {
-        metrics.push({
-          metricType: 'packet_loss_pct',
-          value: Math.round(packetLossPct * 100) / 100,
-        });
-      }
+      emitMetric(metrics, 'packet_loss_pct', packetLossPct);
 
       snapshot.connectionState = peerConnection.connectionState;
-      metrics.push({
-        metricType: 'connection_state',
-        value: metricValueForConnectionState(peerConnection.connectionState),
-      });
+      emitMetric(metrics, 'connection_state', metricValueForConnectionState(peerConnection.connectionState));
 
       for (const metric of metrics) {
         await sendMetric(metric.metricType, metric.value, now, snapshot);
+        options?.onMetric?.({ metricType: metric.metricType, value: metric.value, ts: now, snapshot });
       }
 
       previous = {
         ts: now,
-        videoBytes,
-        packetsLost,
-        packetsSent,
-        packetsReceived,
+        videoBytesSent: outboundVideoBytes,
+        videoBytesReceived: inboundVideoBytes,
+        audioBytesSent: outboundAudioBytes,
         frameDrops,
       };
     } catch (error) {
@@ -326,6 +483,11 @@ export function createSessionClient(
         ingestorUrl: overrides.ingestorUrl ?? config.ingestorUrl,
         sessionId: resolveSessionId(overrides.sessionId ?? config.sessionId),
         broadcasterId: overrides.broadcasterId ?? config.broadcasterId,
+        sourceType: asLabel(overrides.sourceType ?? config.sourceType, DEFAULT_SOURCE_TYPE),
+        sourceLabel: asLabel(overrides.sourceLabel ?? config.sourceLabel, 'local-loopback'),
+        runtimeLabel: asLabel(overrides.runtimeLabel ?? config.runtimeLabel, inferRuntimeLabel()),
+        sessionLabel: asLabel(overrides.sessionLabel ?? config.sessionLabel, 'Browser Telemetry Demo'),
+        broadcasterRole: asLabel(overrides.broadcasterRole ?? config.broadcasterRole, 'publisher'),
       };
     }
     stop();

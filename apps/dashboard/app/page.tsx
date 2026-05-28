@@ -1,5 +1,6 @@
 import {
   decideRecommendation,
+  resolveIncident,
   type IncidentFeedRow,
   listRecentIncidents,
   type RecommendationFeedRow,
@@ -37,6 +38,15 @@ function statusStyle(status: string | null): { backgroundColor: string; color: s
   return { backgroundColor: '#f3f4f6', color: '#374151' };
 }
 
+function effectivenessStyle(
+  status: string | null,
+): { backgroundColor: string; color: string } {
+  if (status === 'helpful') return { backgroundColor: '#e7f8ed', color: '#166534' };
+  if (status === 'not_helpful') return { backgroundColor: '#fee2e2', color: '#991b1b' };
+  if (status === 'unconfirmed') return { backgroundColor: '#fff8db', color: '#854d0e' };
+  return { backgroundColor: '#f3f4f6', color: '#374151' };
+}
+
 function asObject(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
@@ -51,6 +61,8 @@ function buildIncidentOperatorSummary(incident: IncidentFeedRow): {
   const oneLine =
     typeof payload?.oneLineSummary === 'string'
       ? payload.oneLineSummary
+      : typeof payload?.resolutionSummary === 'string'
+        ? payload.resolutionSummary
       : `Incident ${incident.severity} for session ${incident.session_id}.`;
   const rootCause =
     typeof payload?.rootCauseSummary === 'string'
@@ -61,6 +73,8 @@ function buildIncidentOperatorSummary(incident: IncidentFeedRow): {
   const supportingSignals =
     typeof payload?.supportingSignalsSummary === 'string'
       ? payload.supportingSignalsSummary
+      : typeof payload?.mitigationSummary === 'string'
+        ? payload.mitigationSummary
       : 'No signal summary available.';
 
   return { oneLine, rootCause, supportingSignals };
@@ -105,6 +119,21 @@ async function dismissRecommendation(formData: FormData): Promise<void> {
   revalidatePath('/');
 }
 
+async function resolveIncidentAction(formData: FormData): Promise<void> {
+  'use server';
+
+  const incidentId = String(formData.get('incidentId') ?? '');
+  if (!incidentId) return;
+
+  const notes = String(formData.get('resolutionNotes') ?? '').trim();
+  await resolveIncident({
+    incidentId,
+    operatorId: 'local-operator',
+    notes: notes || 'Resolved from dashboard',
+  });
+  revalidatePath('/');
+}
+
 export default async function Home() {
   const sessions = await listRecentSessionStatus(25).catch(() => []);
   const incidents = await listRecentIncidents(25).catch(() => []);
@@ -136,6 +165,8 @@ export default async function Home() {
               {[
                 'Session ID',
                 'Broadcaster',
+                'Source',
+                'Session Label',
                 'Status',
                 'Started',
                 'Event Count',
@@ -164,6 +195,13 @@ export default async function Home() {
                 </td>
                 <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
                   {session.broadcaster_id}
+                </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  {session.source_type}
+                  {session.source_label ? ` (${session.source_label})` : ''}
+                </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  {session.session_label ?? '—'}
                 </td>
                 <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>{session.status}</td>
                 <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
@@ -233,8 +271,10 @@ export default async function Home() {
                 'Summary',
                 'Root Cause Summary',
                 'Supporting Signals',
+                'Resolution',
                 'Started',
                 'Updated',
+                'Action',
               ].map((heading) => (
                 <th
                   key={heading}
@@ -300,10 +340,33 @@ export default async function Home() {
                 <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>{summary.rootCause}</td>
                 <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>{summary.supportingSignals}</td>
                 <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  {incident.status === 'resolved'
+                    ? incident.resolution_summary || 'Resolved'
+                    : '—'}
+                </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
                   {formatTimestamp(incident.started_at)}
                 </td>
                 <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
                   {formatTimestamp(incident.updated_at)}
+                </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  {incident.status === 'open' ? (
+                    <form action={resolveIncidentAction} style={{ display: 'grid', gap: '0.35rem' }}>
+                      <input type="hidden" name="incidentId" value={incident.id} />
+                      <input
+                        type="text"
+                        name="resolutionNotes"
+                        placeholder="Resolution notes"
+                        style={{ width: 180 }}
+                      />
+                      <button type="submit">Mark Resolved</button>
+                    </form>
+                  ) : (
+                    <>
+                      {incident.resolved_by ?? 'operator'} at {formatTimestamp(incident.resolved_at)}
+                    </>
+                  )}
                 </td>
                 </tr>
               );
@@ -331,6 +394,8 @@ export default async function Home() {
                 'Recommendation',
                 'Rationale',
                 'Summary',
+                'Effectiveness',
+                'Effectiveness Reason',
                 'Status',
                 'Created',
                 'Decision',
@@ -394,6 +459,23 @@ export default async function Home() {
                 </td>
                 <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
                   {buildRecommendationOperatorSummary(recommendation)}
+                </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  <span
+                    style={{
+                      ...effectivenessStyle(recommendation.effectiveness_signal),
+                      borderRadius: '999px',
+                      display: 'inline-block',
+                      fontWeight: 600,
+                      padding: '0.15rem 0.5rem',
+                      textTransform: 'capitalize',
+                    }}
+                  >
+                    {recommendation.effectiveness_signal.replace('_', ' ')}
+                  </span>
+                </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  {recommendation.effectiveness_reason ?? '—'}
                 </td>
                 <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
                   <span

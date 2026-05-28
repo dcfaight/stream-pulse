@@ -52,7 +52,7 @@ async function createLoopbackConnection(onStateChange: (state: RTCPeerConnection
   const receiverPeer = new RTCPeerConnection();
 
   senderPeer.addEventListener('connectionstatechange', () => onStateChange(senderPeer.connectionState));
-  receiverPeer.addEventListener('connectionstatechange', () => onStateChange(senderPeer.connectionState));
+  receiverPeer.addEventListener('connectionstatechange', () => onStateChange(receiverPeer.connectionState));
 
   senderPeer.onicecandidate = (event) => {
     if (event.candidate) {
@@ -108,12 +108,23 @@ async function createLoopbackConnection(onStateChange: (state: RTCPeerConnection
 export default function WebRtcDemoPage() {
   const [sessionId, setSessionId] = useState(() => crypto.randomUUID());
   const [broadcasterId, setBroadcasterId] = useState('browser-demo-broadcaster');
+  const [sourceType, setSourceType] = useState('browser-demo');
+  const [sourceLabel, setSourceLabel] = useState('local-loopback');
+  const [runtimeLabel, setRuntimeLabel] = useState(
+    typeof navigator === 'undefined' ? 'browser:unknown' : `browser:${navigator.userAgent}`,
+  );
+  const [sessionLabel, setSessionLabel] = useState('Browser Telemetry Demo');
   const [ingestorUrl, setIngestorUrl] = useState('http://localhost:4001');
   const [intervalMs, setIntervalMs] = useState(2000);
   const [connectionState, setConnectionState] = useState<RTCPeerConnectionState>('new');
   const [captureActive, setCaptureActive] = useState(false);
   const [statusMessage, setStatusMessage] = useState('Idle');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [lastMetric, setLastMetric] = useState<{
+    metricType: string;
+    value: number;
+    ts: number;
+  } | null>(null);
 
   const clientRef = useRef<SessionClient | null>(null);
   const loopbackRef = useRef<LoopbackHandle | null>(null);
@@ -130,6 +141,7 @@ export default function WebRtcDemoPage() {
     setCaptureActive(false);
     setConnectionState('closed');
     setStatusMessage('Stopped');
+    setLastMetric(null);
   };
 
   const startDemo = async () => {
@@ -150,8 +162,19 @@ export default function WebRtcDemoPage() {
         ingestorUrl,
         sessionId,
         broadcasterId,
+        sourceType,
+        sourceLabel,
+        runtimeLabel,
+        sessionLabel,
         onError: (error) => {
           setErrorMessage(error instanceof Error ? error.message : 'Unknown SDK error');
+        },
+        onMetric: (metric) => {
+          setLastMetric({
+            metricType: metric.metricType,
+            value: metric.value,
+            ts: metric.ts,
+          });
         },
       });
       clientRef.current = client;
@@ -174,7 +197,7 @@ export default function WebRtcDemoPage() {
       <h1>WebRTC Browser Telemetry Demo</h1>
       <p>
         Creates a local loopback RTCPeerConnection, polls <code>getStats()</code>, and sends canonical
-        metrics to <code>/telemetry</code>.
+        metrics to <code>/telemetry</code>. Includes source/runtime labels for easier debugging.
       </p>
 
       <div style={{ display: 'grid', gap: '0.75rem', maxWidth: 720 }}>
@@ -191,6 +214,38 @@ export default function WebRtcDemoPage() {
           <input
             value={broadcasterId}
             onChange={(event) => setBroadcasterId(event.target.value)}
+            style={{ display: 'block', width: '100%', marginTop: '0.25rem' }}
+          />
+        </label>
+        <label>
+          Source Type
+          <input
+            value={sourceType}
+            onChange={(event) => setSourceType(event.target.value)}
+            style={{ display: 'block', width: '100%', marginTop: '0.25rem' }}
+          />
+        </label>
+        <label>
+          Source Label
+          <input
+            value={sourceLabel}
+            onChange={(event) => setSourceLabel(event.target.value)}
+            style={{ display: 'block', width: '100%', marginTop: '0.25rem' }}
+          />
+        </label>
+        <label>
+          Runtime Label
+          <input
+            value={runtimeLabel}
+            onChange={(event) => setRuntimeLabel(event.target.value)}
+            style={{ display: 'block', width: '100%', marginTop: '0.25rem' }}
+          />
+        </label>
+        <label>
+          Session Label
+          <input
+            value={sessionLabel}
+            onChange={(event) => setSessionLabel(event.target.value)}
             style={{ display: 'block', width: '100%', marginTop: '0.25rem' }}
           />
         </label>
@@ -225,6 +280,7 @@ export default function WebRtcDemoPage() {
         <button type="button" onClick={() => setSessionId(crypto.randomUUID())}>
           New Session ID
         </button>
+        <Link href={`/sessions/${sessionId}`}>Open Session Timeline</Link>
       </div>
 
       <div style={{ marginTop: '1.25rem', padding: '0.9rem', border: '1px solid #ddd' }}>
@@ -239,6 +295,21 @@ export default function WebRtcDemoPage() {
         </p>
         <p>
           <strong>Status:</strong> {statusMessage}
+        </p>
+        <p>
+          <strong>Source:</strong> {sourceType} ({sourceLabel})
+        </p>
+        <p>
+          <strong>Runtime:</strong> {runtimeLabel}
+        </p>
+        <p>
+          <strong>Session label:</strong> {sessionLabel}
+        </p>
+        <p>
+          <strong>Latest metric:</strong>{' '}
+          {lastMetric
+            ? `${lastMetric.metricType}=${lastMetric.value} @ ${new Date(lastMetric.ts).toLocaleTimeString()}`
+            : '—'}
         </p>
         {errorMessage ? (
           <p style={{ color: '#b91c1c' }}>

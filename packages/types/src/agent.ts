@@ -1,5 +1,6 @@
 export type RecommendationStatus = 'pending' | 'approved' | 'dismissed' | 'superseded' | 'applied';
 export type OperatorDecision = 'approve' | 'dismiss';
+export type RecommendationEffectiveness = 'unknown' | 'helpful' | 'not_helpful' | 'unconfirmed';
 
 export interface AgentTrigger {
   sessionId: string;
@@ -29,6 +30,8 @@ export interface Recommendation {
   triggerSignals: Record<string, number>;
   priority: AgentResult['priority'];
   confidence: number;
+  effectivenessSignal?: RecommendationEffectiveness;
+  effectivenessReason?: string;
 }
 
 export interface OperatorAction {

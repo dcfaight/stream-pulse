@@ -5,6 +5,11 @@
 export interface StatSnapshot {
   sessionId: string;
   ts: number; // Unix ms
+  sourceType?: string;
+  sourceLabel?: string;
+  runtimeLabel?: string;
+  sessionLabel?: string;
+  broadcasterRole?: string;
   videoBytesReceived?: number;
   videoBytesSent?: number;
   audioBytesSent?: number;
@@ -15,9 +20,12 @@ export interface StatSnapshot {
   roundTripTimeMs?: number;
   jitterMs?: number;
   framesPerSecond?: number;
+  frameWidth?: number;
+  frameHeight?: number;
   frameDrops?: number;
   audioLevel?: number; // 0.0 – 1.0
   connectionState?: string;
+  browserName?: string;
 }
 
 /**
@@ -30,6 +38,11 @@ export type MetricType =
   | 'packet_loss_pct'
   | 'jitter_ms'
   | 'frame_drops_per_sec'
+  | 'frames_per_second'
+  | 'frame_width'
+  | 'frame_height'
+  | 'bytes_sent_video'
+  | 'bytes_received_video'
   | 'audio_level'
   | 'connection_state';
 
@@ -49,6 +62,11 @@ export interface DerivedMetrics {
   packetLossPct: number;
   jitterMs: number;
   frameDropsPerSec: number;
+  framesPerSecond: number;
+  frameWidth: number;
+  frameHeight: number;
+  bytesSentVideo: number;
+  bytesReceivedVideo: number;
   audioLevel: number;
   connectionState: string;
 }

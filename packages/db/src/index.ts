@@ -11,6 +11,11 @@ const MIGRATIONS_TABLE = 'schema_migrations';
 export interface SessionRow {
   id: string;
   broadcaster_id: string;
+  source_type: string;
+  source_label: string | null;
+  runtime_label: string | null;
+  session_label: string | null;
+  metadata: unknown;
   started_at: Date;
   ended_at: Date | null;
   status: string;
@@ -28,6 +33,10 @@ export interface MetricEventRow {
 export interface SessionStatusRow {
   id: string;
   broadcaster_id: string;
+  source_type: string;
+  source_label: string | null;
+  runtime_label: string | null;
+  session_label: string | null;
   started_at: Date;
   status: string;
   latest_metric_type: string | null;
@@ -71,6 +80,10 @@ export interface IncidentRow {
   confidence: string;
   severity: string;
   updated_at: Date;
+  resolved_by: string | null;
+  resolution_notes: string | null;
+  resolution_summary: string | null;
+  mitigation_summary: string | null;
 }
 
 export interface IncidentTimelineRow {
@@ -106,6 +119,9 @@ export interface RecommendationRow {
   superseded_by: string | null;
   decided_at: Date | null;
   decided_by: string | null;
+  effectiveness_signal: string;
+  effectiveness_reason: string | null;
+  effectiveness_assessed_at: Date | null;
 }
 
 export interface RecommendationFeedRow extends RecommendationRow {
@@ -116,6 +132,22 @@ export interface RecommendationFeedRow extends RecommendationRow {
   latest_decision: string | null;
   latest_operator_id: string | null;
   latest_decided_at: Date | null;
+}
+
+export interface SessionSummaryRow {
+  session_id: string;
+  incident_count: string;
+  open_incident_count: string;
+  resolved_incident_count: string;
+  recommendation_count: string;
+  approved_recommendation_count: string;
+  dismissed_recommendation_count: string;
+  helpful_recommendation_count: string;
+  not_helpful_recommendation_count: string;
+  top_root_cause: string | null;
+  final_qoe_score: string | null;
+  final_qoe_severity: string | null;
+  generated_at: Date;
 }
 
 export interface SessionReplayTimelineEventRow {
@@ -227,32 +259,76 @@ export async function runMigrations(): Promise<{ applied: string[]; skipped: str
   return { applied, skipped };
 }
 
-export async function upsertSession(
-  sessionId: string,
-  broadcasterId: string,
-): Promise<SessionRow> {
+export async function upsertSession(input: {
+  sessionId: string;
+  broadcasterId: string;
+  sourceType?: string;
+  sourceLabel?: string;
+  runtimeLabel?: string;
+  sessionLabel?: string;
+  metadata?: Record<string, unknown>;
+}): Promise<SessionRow> {
+  const safeSourceType = input.sourceType?.trim() || 'unknown';
+  const safeSourceLabel = input.sourceLabel?.trim() || null;
+  const safeRuntimeLabel = input.runtimeLabel?.trim() || null;
+  const safeSessionLabel = input.sessionLabel?.trim() || null;
+  const safeMetadata = input.metadata ?? {};
   await runQuery(
     `
-      INSERT INTO sessions (id, broadcaster_id, status)
-      VALUES ($1, $2, 'active')
-      ON CONFLICT (id) DO NOTHING;
+      INSERT INTO sessions (
+        id,
+        broadcaster_id,
+        source_type,
+        source_label,
+        runtime_label,
+        session_label,
+        metadata,
+        status
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, 'active')
+      ON CONFLICT (id) DO UPDATE
+      SET
+        broadcaster_id = EXCLUDED.broadcaster_id,
+        source_type = COALESCE(NULLIF(EXCLUDED.source_type, ''), sessions.source_type),
+        source_label = COALESCE(EXCLUDED.source_label, sessions.source_label),
+        runtime_label = COALESCE(EXCLUDED.runtime_label, sessions.runtime_label),
+        session_label = COALESCE(EXCLUDED.session_label, sessions.session_label),
+        metadata = COALESCE(sessions.metadata, '{}'::jsonb) || COALESCE(EXCLUDED.metadata, '{}'::jsonb);
     `,
-    [sessionId, broadcasterId],
+    [
+      input.sessionId,
+      input.broadcasterId,
+      safeSourceType,
+      safeSourceLabel,
+      safeRuntimeLabel,
+      safeSessionLabel,
+      JSON.stringify(safeMetadata),
+    ],
   );
 
   const result = await runQuery<SessionRow>(
     `
-      SELECT id, broadcaster_id, started_at, ended_at, status
+      SELECT
+        id,
+        broadcaster_id,
+        source_type,
+        source_label,
+        runtime_label,
+        session_label,
+        metadata,
+        started_at,
+        ended_at,
+        status
       FROM sessions
       WHERE id = $1
       LIMIT 1;
     `,
-    [sessionId],
+    [input.sessionId],
   );
 
   const session = result.rows[0];
   if (!session) {
-    throw new Error(`Failed to upsert session ${sessionId}`);
+    throw new Error(`Failed to upsert session ${input.sessionId}`);
   }
 
   return session;
@@ -289,6 +365,10 @@ export async function listRecentSessionStatus(limit = 20): Promise<SessionStatus
       SELECT
         s.id,
         s.broadcaster_id,
+        s.source_type,
+        s.source_label,
+        s.runtime_label,
+        s.session_label,
         s.started_at,
         s.status,
         lm.metric_type AS latest_metric_type,
@@ -317,6 +397,10 @@ export async function listRecentSessionStatus(limit = 20): Promise<SessionStatus
       GROUP BY
         s.id,
         s.broadcaster_id,
+        s.source_type,
+        s.source_label,
+        s.runtime_label,
+        s.session_label,
         s.started_at,
         s.status,
         lm.metric_type,
@@ -429,7 +513,20 @@ export async function findRecentOpenIncidentForSession(
     : 10;
   const result = await runQuery<IncidentRow>(
     `
-      SELECT id, session_id, started_at, resolved_at, status, root_cause, confidence::text AS confidence, severity, updated_at
+      SELECT
+        id,
+        session_id,
+        started_at,
+        resolved_at,
+        status,
+        root_cause,
+        confidence::text AS confidence,
+        severity,
+        updated_at,
+        resolved_by,
+        resolution_notes,
+        resolution_summary,
+        mitigation_summary
       FROM incidents
       WHERE session_id = $1
         AND status = 'open'
@@ -454,7 +551,20 @@ export async function createIncident(input: {
     `
       INSERT INTO incidents (session_id, started_at, updated_at, severity, root_cause, confidence, status)
       VALUES ($1, $2, $2, $3, $4, $5, 'open')
-      RETURNING id, session_id, started_at, resolved_at, status, root_cause, confidence::text AS confidence, severity, updated_at;
+      RETURNING
+        id,
+        session_id,
+        started_at,
+        resolved_at,
+        status,
+        root_cause,
+        confidence::text AS confidence,
+        severity,
+        updated_at,
+        resolved_by,
+        resolution_notes,
+        resolution_summary,
+        mitigation_summary;
     `,
     [input.sessionId, input.startedAt, input.severity, input.rootCause, input.confidence],
   );
@@ -480,7 +590,20 @@ export async function updateIncident(input: {
           confidence = $4,
           updated_at = $5
       WHERE id = $1
-      RETURNING id, session_id, started_at, resolved_at, status, root_cause, confidence::text AS confidence, severity, updated_at;
+      RETURNING
+        id,
+        session_id,
+        started_at,
+        resolved_at,
+        status,
+        root_cause,
+        confidence::text AS confidence,
+        severity,
+        updated_at,
+        resolved_by,
+        resolution_notes,
+        resolution_summary,
+        mitigation_summary;
     `,
     [input.incidentId, input.severity, input.rootCause, input.confidence, input.updatedAt],
   );
@@ -527,6 +650,10 @@ export async function listRecentIncidents(limit = 25): Promise<IncidentFeedRow[]
         i.confidence::text AS confidence,
         i.severity,
         i.updated_at,
+        i.resolved_by,
+        i.resolution_notes,
+        i.resolution_summary,
+        i.mitigation_summary,
         s.broadcaster_id,
         lt.ts AS latest_event_ts,
         lt.event_type AS latest_event_type,
@@ -572,6 +699,10 @@ export async function listIncidentsForRecommendation(limit = 25): Promise<Incide
         i.confidence::text AS confidence,
         i.severity,
         i.updated_at,
+        i.resolved_by,
+        i.resolution_notes,
+        i.resolution_summary,
+        i.mitigation_summary,
         s.broadcaster_id,
         lt.ts AS latest_event_ts,
         lt.event_type AS latest_event_type,
@@ -662,7 +793,10 @@ export async function createRecommendation(input: {
           dedupe_key,
           superseded_by,
           decided_at,
-          decided_by
+          decided_by,
+          effectiveness_signal,
+          effectiveness_reason,
+          effectiveness_assessed_at
         FROM agent_recommendations
         WHERE status = 'pending'
           AND dedupe_key = $1
@@ -722,7 +856,10 @@ export async function createRecommendation(input: {
           dedupe_key,
           superseded_by,
           decided_at,
-          decided_by;
+          decided_by,
+          effectiveness_signal,
+          effectiveness_reason,
+          effectiveness_assessed_at;
       `,
       [
         input.incidentId,
@@ -829,6 +966,9 @@ export async function listRecentRecommendations(
         r.superseded_by,
         r.decided_at,
         r.decided_by,
+        r.effectiveness_signal,
+        r.effectiveness_reason,
+        r.effectiveness_assessed_at,
         i.session_id,
         i.status AS incident_status,
         i.severity AS incident_severity,
@@ -872,6 +1012,10 @@ export async function listSessionIncidents(
         i.confidence::text AS confidence,
         i.severity,
         i.updated_at,
+        i.resolved_by,
+        i.resolution_notes,
+        i.resolution_summary,
+        i.mitigation_summary,
         s.broadcaster_id,
         lt.ts AS latest_event_ts,
         lt.event_type AS latest_event_type,
@@ -1062,6 +1206,311 @@ export async function listSessionReplayTimeline(
   return result.rows;
 }
 
+function toNumber(value: string | null): number | null {
+  if (value == null) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+export async function resolveIncident(input: {
+  incidentId: string;
+  operatorId: string;
+  notes?: string;
+  resolvedAt?: Date;
+}): Promise<IncidentRow> {
+  const resolvedAt = input.resolvedAt ?? new Date();
+  const client = await getDbPool().connect();
+  try {
+    await client.query('BEGIN');
+    const incidentResult = await client.query<IncidentRow>(
+      `
+        SELECT
+          id,
+          session_id,
+          started_at,
+          resolved_at,
+          status,
+          root_cause,
+          confidence::text AS confidence,
+          severity,
+          updated_at,
+          resolved_by,
+          resolution_notes,
+          resolution_summary,
+          mitigation_summary
+        FROM incidents
+        WHERE id = $1
+        LIMIT 1;
+      `,
+      [input.incidentId],
+    );
+    const currentIncident = incidentResult.rows[0];
+    if (!currentIncident) {
+      throw new Error(`Incident ${input.incidentId} does not exist`);
+    }
+    if (currentIncident.status === 'resolved') {
+      await client.query('COMMIT');
+      return currentIncident;
+    }
+
+    const approvedRecommendationResult = await client.query<{
+      id: string;
+      action_type: string;
+      priority: string;
+      recommendation_text: string;
+      decided_at: Date | null;
+    }>(
+      `
+        SELECT id, action_type, priority, recommendation_text, decided_at
+        FROM agent_recommendations
+        WHERE incident_id = $1
+          AND status = 'approved'
+        ORDER BY COALESCE(decided_at, created_at) DESC
+        LIMIT 1;
+      `,
+      [input.incidentId],
+    );
+    const approvedRecommendation = approvedRecommendationResult.rows[0];
+    const mitigationSummary = approvedRecommendation
+      ? `Likely mitigated by approved action ${approvedRecommendation.action_type} (${approvedRecommendation.priority}).`
+      : 'Resolved without a linked approved recommendation.';
+    const resolutionSummary = `Resolved ${currentIncident.severity} incident for session ${currentIncident.session_id}; final status is stable/closed.`;
+
+    const updateResult = await client.query<IncidentRow>(
+      `
+        UPDATE incidents
+        SET
+          status = 'resolved',
+          resolved_at = $2,
+          updated_at = $2,
+          resolved_by = $3,
+          resolution_notes = $4,
+          resolution_summary = $5,
+          mitigation_summary = $6
+        WHERE id = $1
+        RETURNING
+          id,
+          session_id,
+          started_at,
+          resolved_at,
+          status,
+          root_cause,
+          confidence::text AS confidence,
+          severity,
+          updated_at,
+          resolved_by,
+          resolution_notes,
+          resolution_summary,
+          mitigation_summary;
+      `,
+      [
+        input.incidentId,
+        resolvedAt,
+        input.operatorId,
+        input.notes ?? null,
+        resolutionSummary,
+        mitigationSummary,
+      ],
+    );
+    const incident = updateResult.rows[0];
+    if (!incident) {
+      throw new Error(`Failed to resolve incident ${input.incidentId}`);
+    }
+
+    await client.query(
+      `
+        INSERT INTO incident_timeline (incident_id, ts, event_type, payload)
+        VALUES ($1, $2, 'incident_resolved', $3::jsonb);
+      `,
+      [
+        input.incidentId,
+        resolvedAt,
+        JSON.stringify({
+          resolvedBy: input.operatorId,
+          resolutionNotes: input.notes ?? null,
+          resolutionSummary,
+          mitigationSummary,
+          approvedRecommendationId: approvedRecommendation?.id ?? null,
+          approvedActionType: approvedRecommendation?.action_type ?? null,
+        }),
+      ],
+    );
+    await client.query('COMMIT');
+    return incident;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function assessRecommendationEffectivenessForSession(
+  sessionId: string,
+): Promise<{ assessed: number }> {
+  const result = await runQuery<{
+    recommendation_id: string;
+    recommendation_status: string;
+    decided_at: Date | null;
+    incident_status: string;
+    incident_resolved_at: Date | null;
+    pre_score: string | null;
+    post_score: string | null;
+    post_severity: string | null;
+  }>(
+    `
+      SELECT
+        r.id AS recommendation_id,
+        r.status AS recommendation_status,
+        r.decided_at,
+        i.status AS incident_status,
+        i.resolved_at AS incident_resolved_at,
+        (
+          SELECT q.score::text
+          FROM qoe_segments q
+          WHERE q.session_id = i.session_id
+            AND q.end_ts <= COALESCE(r.decided_at, r.created_at)
+          ORDER BY q.end_ts DESC
+          LIMIT 1
+        ) AS pre_score,
+        (
+          SELECT q.score::text
+          FROM qoe_segments q
+          WHERE q.session_id = i.session_id
+            AND q.end_ts >= COALESCE(r.decided_at, r.created_at)
+          ORDER BY q.end_ts ASC
+          LIMIT 1
+        ) AS post_score,
+        (
+          SELECT q.severity
+          FROM qoe_segments q
+          WHERE q.session_id = i.session_id
+            AND q.end_ts >= COALESCE(r.decided_at, r.created_at)
+          ORDER BY q.end_ts DESC
+          LIMIT 1
+        ) AS post_severity
+      FROM agent_recommendations r
+      JOIN incidents i ON i.id = r.incident_id
+      WHERE i.session_id = $1
+        AND r.status IN ('approved', 'dismissed');
+    `,
+    [sessionId],
+  );
+
+  let assessed = 0;
+  for (const row of result.rows) {
+    let signal: 'unknown' | 'helpful' | 'not_helpful' | 'unconfirmed' = 'unknown';
+    let reason = 'No deterministic effectiveness evidence yet.';
+    const preScore = toNumber(row.pre_score);
+    const postScore = toNumber(row.post_score);
+    const deltaScore =
+      typeof preScore === 'number' && typeof postScore === 'number' ? postScore - preScore : null;
+
+    if (row.recommendation_status !== 'approved') {
+      signal = 'unconfirmed';
+      reason = 'Recommendation was not approved, so mitigation impact is not attributable.';
+    } else if (
+      row.incident_status === 'resolved' &&
+      row.decided_at &&
+      row.incident_resolved_at &&
+      row.incident_resolved_at >= row.decided_at
+    ) {
+      signal = 'helpful';
+      reason = 'Incident resolved after recommendation approval.';
+    } else if (typeof deltaScore === 'number' && deltaScore >= 8) {
+      signal = 'helpful';
+      reason = `QoE improved by ${Math.round(deltaScore)} points after approval.`;
+    } else if (typeof deltaScore === 'number' && deltaScore <= -5) {
+      signal = 'not_helpful';
+      reason = `QoE declined by ${Math.round(Math.abs(deltaScore))} points after approval.`;
+    } else if (
+      row.recommendation_status === 'approved' &&
+      row.incident_status === 'open' &&
+      row.post_severity &&
+      (row.post_severity === 'poor' || row.post_severity === 'critical')
+    ) {
+      signal = 'not_helpful';
+      reason = `Incident remains ${row.post_severity} after recommendation approval.`;
+    } else if (typeof postScore === 'number') {
+      signal = 'unconfirmed';
+      reason = 'Post-action telemetry available but improvement is inconclusive.';
+    }
+
+    await runQuery(
+      `
+        UPDATE agent_recommendations
+        SET effectiveness_signal = $2,
+            effectiveness_reason = $3,
+            effectiveness_assessed_at = now()
+        WHERE id = $1;
+      `,
+      [row.recommendation_id, signal, reason],
+    );
+    assessed += 1;
+  }
+
+  return { assessed };
+}
+
+export async function getSessionSummary(sessionId: string): Promise<SessionSummaryRow | null> {
+  const result = await runQuery<SessionSummaryRow>(
+    `
+      SELECT
+        $1::uuid AS session_id,
+        COALESCE(inc.incident_count, 0)::text AS incident_count,
+        COALESCE(inc.open_incident_count, 0)::text AS open_incident_count,
+        COALESCE(inc.resolved_incident_count, 0)::text AS resolved_incident_count,
+        COALESCE(rec.recommendation_count, 0)::text AS recommendation_count,
+        COALESCE(rec.approved_recommendation_count, 0)::text AS approved_recommendation_count,
+        COALESCE(rec.dismissed_recommendation_count, 0)::text AS dismissed_recommendation_count,
+        COALESCE(rec.helpful_recommendation_count, 0)::text AS helpful_recommendation_count,
+        COALESCE(rec.not_helpful_recommendation_count, 0)::text AS not_helpful_recommendation_count,
+        root.top_root_cause,
+        qoe.final_qoe_score,
+        qoe.final_qoe_severity,
+        now() AS generated_at
+      FROM (SELECT 1) anchor
+      LEFT JOIN LATERAL (
+        SELECT
+          COUNT(*) AS incident_count,
+          COUNT(*) FILTER (WHERE status = 'open') AS open_incident_count,
+          COUNT(*) FILTER (WHERE status = 'resolved') AS resolved_incident_count
+        FROM incidents
+        WHERE session_id = $1
+      ) inc ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT
+          COUNT(*) AS recommendation_count,
+          COUNT(*) FILTER (WHERE status = 'approved') AS approved_recommendation_count,
+          COUNT(*) FILTER (WHERE status = 'dismissed') AS dismissed_recommendation_count,
+          COUNT(*) FILTER (WHERE effectiveness_signal = 'helpful') AS helpful_recommendation_count,
+          COUNT(*) FILTER (WHERE effectiveness_signal = 'not_helpful') AS not_helpful_recommendation_count
+        FROM agent_recommendations r
+        JOIN incidents i ON i.id = r.incident_id
+        WHERE i.session_id = $1
+      ) rec ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT root_cause AS top_root_cause
+        FROM incidents
+        WHERE session_id = $1
+          AND root_cause <> ''
+        GROUP BY root_cause
+        ORDER BY COUNT(*) DESC, MAX(updated_at) DESC
+        LIMIT 1
+      ) root ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT score::text AS final_qoe_score, severity AS final_qoe_severity
+        FROM qoe_segments
+        WHERE session_id = $1
+        ORDER BY end_ts DESC
+        LIMIT 1
+      ) qoe ON TRUE;
+    `,
+    [sessionId],
+  );
+  return result.rows[0] ?? null;
+}
+
 export async function decideRecommendation(input: {
   recommendationId: string;
   operatorId: string;
@@ -1084,7 +1533,13 @@ export async function decideRecommendation(input: {
         UPDATE agent_recommendations
         SET status = $2,
             decided_at = now(),
-            decided_by = $3
+            decided_by = $3,
+            effectiveness_signal = CASE WHEN $2 = 'approved' THEN 'unknown' ELSE 'unconfirmed' END,
+            effectiveness_reason = CASE
+              WHEN $2 = 'approved' THEN 'Awaiting follow-up telemetry after operator approval.'
+              ELSE 'Recommendation was dismissed by operator.'
+            END,
+            effectiveness_assessed_at = now()
         WHERE id = $1
           AND status = 'pending'
         RETURNING id, status, incident_id, action_type, priority, confidence::text AS confidence;

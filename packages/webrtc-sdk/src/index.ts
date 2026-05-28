@@ -25,7 +25,7 @@ interface MinimalRemoteInboundStats extends RTCStats {
   jitter?: number;
 }
 
-interface MinimalTrackStats extends RTCStats {
+interface MinimalAudioSourceStats extends RTCStats {
   kind?: string;
   mediaType?: string;
   audioLevel?: number;
@@ -43,7 +43,7 @@ interface StatSelection {
   outboundAudio?: RTCOutboundRtpStreamStats;
   inboundAudio?: RTCInboundRtpStreamStats;
   remoteInboundAudio?: MinimalRemoteInboundStats;
-  audioTrack?: MinimalTrackStats;
+  audioSource?: MinimalAudioSourceStats;
   candidatePair?: RTCIceCandidatePairStats;
 }
 
@@ -165,31 +165,32 @@ function pickStats(report: RTCStatsReport): StatSelection {
   let outboundAudio: RTCOutboundRtpStreamStats | undefined;
   let inboundAudio: RTCInboundRtpStreamStats | undefined;
   let remoteInboundAudio: MinimalRemoteInboundStats | undefined;
-  let audioTrack: MinimalTrackStats | undefined;
+  let audioSource: MinimalAudioSourceStats | undefined;
   let candidatePair: RTCIceCandidatePairStats | undefined;
 
   for (const stat of reportEntries(report)) {
-    if (stat.type === 'outbound-rtp' && statKind(stat) === 'video' && !outboundVideo) {
+    const statType = (stat as RTCStats & { type: string }).type;
+    if (statType === 'outbound-rtp' && statKind(stat) === 'video' && !outboundVideo) {
       outboundVideo = stat as RTCOutboundRtpStreamStats;
       continue;
     }
-    if (stat.type === 'inbound-rtp' && statKind(stat) === 'video' && !inboundVideo) {
+    if (statType === 'inbound-rtp' && statKind(stat) === 'video' && !inboundVideo) {
       inboundVideo = stat as RTCInboundRtpStreamStats;
       continue;
     }
-    if (stat.type === 'outbound-rtp' && statKind(stat) === 'audio' && !outboundAudio) {
+    if (statType === 'outbound-rtp' && statKind(stat) === 'audio' && !outboundAudio) {
       outboundAudio = stat as RTCOutboundRtpStreamStats;
       continue;
     }
-    if (stat.type === 'inbound-rtp' && statKind(stat) === 'audio' && !inboundAudio) {
+    if (statType === 'inbound-rtp' && statKind(stat) === 'audio' && !inboundAudio) {
       inboundAudio = stat as RTCInboundRtpStreamStats;
       continue;
     }
-    if (!audioTrack && stat.type === 'track' && statKind(stat) === 'audio') {
-      audioTrack = stat as MinimalTrackStats;
+    if (!audioSource && statType === 'media-source' && statKind(stat) === 'audio') {
+      audioSource = stat as MinimalAudioSourceStats;
       continue;
     }
-    if (stat.type === 'candidate-pair') {
+    if (statType === 'candidate-pair') {
       const pair = stat as RTCIceCandidatePairStats;
       if (!candidatePair || candidatePairPreference(pair) > candidatePairPreference(candidatePair)) {
         candidatePair = pair;
@@ -211,7 +212,7 @@ function pickStats(report: RTCStatsReport): StatSelection {
     outboundAudio,
     inboundAudio,
     remoteInboundAudio,
-    audioTrack,
+    audioSource,
     candidatePair,
   };
 }
@@ -424,7 +425,7 @@ export function createSessionClient(
       }
 
       const audioLevel =
-        toFinite(selected.audioTrack?.audioLevel) ??
+        toFinite(selected.audioSource?.audioLevel) ??
         toFinite(
           (selected.inboundAudio as (RTCInboundRtpStreamStats & { audioLevel?: number }) | undefined)
             ?.audioLevel,

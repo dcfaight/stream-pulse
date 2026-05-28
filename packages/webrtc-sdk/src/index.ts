@@ -213,7 +213,7 @@ function candidatePairPreference(stat: RTCIceCandidatePairStats): number {
   const nominated = stat.nominated ? 2 : 0;
   const selected = (stat as RTCIceCandidatePairStats & { selected?: boolean }).selected ? 1 : 0;
   const succeeded = stat.state === 'succeeded' ? 1 : 0;
-  const writable = stat.writable ? 1 : 0;
+  const writable = (stat as RTCIceCandidatePairStats & { writable?: boolean }).writable ? 1 : 0;
   const availableOutgoingBitrate = toFinite(stat.availableOutgoingBitrate) ?? 0;
   return nominated + selected + succeeded + writable + availableOutgoingBitrate / 10_000_000;
 }
@@ -617,7 +617,9 @@ export function createSessionClient(
         (selected.candidatePair as RTCIceCandidatePairStats & { selected?: boolean } | undefined)?.selected,
       );
       snapshot.candidateNominated = Boolean(selected.candidatePair?.nominated);
-      snapshot.candidateWritable = Boolean(selected.candidatePair?.writable);
+      snapshot.candidateWritable = Boolean(
+        (selected.candidatePair as RTCIceCandidatePairStats & { writable?: boolean } | undefined)?.writable,
+      );
       snapshot.selectedCandidatePairId = selected.candidatePair?.id;
       snapshot.localCandidateType = selected.localCandidate?.candidateType;
       snapshot.remoteCandidateType = selected.remoteCandidate?.candidateType;

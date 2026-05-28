@@ -9,6 +9,8 @@ export interface StatSnapshot {
   sourceLabel?: string;
   runtimeLabel?: string;
   sessionLabel?: string;
+  sourceRole?: 'broadcaster' | 'viewer' | 'browser-demo' | 'simulator' | 'unknown';
+  streamDirection?: 'inbound' | 'outbound' | 'bidirectional' | 'unknown';
   broadcasterRole?: string;
   videoBytesReceived?: number;
   videoBytesSent?: number;
@@ -43,6 +45,13 @@ export type MetricType =
   | 'frame_height'
   | 'bytes_sent_video'
   | 'bytes_received_video'
+  | 'bytes_sent_audio'
+  | 'bytes_received_audio'
+  | 'bitrate_video_inbound_kbps'
+  | 'bitrate_audio_inbound_kbps'
+  | 'nack_count'
+  | 'pli_count'
+  | 'available_outgoing_bitrate_kbps'
   | 'audio_level'
   | 'connection_state';
 
@@ -67,6 +76,13 @@ export interface DerivedMetrics {
   frameHeight: number;
   bytesSentVideo: number;
   bytesReceivedVideo: number;
+  bytesSentAudio: number;
+  bytesReceivedAudio: number;
+  bitrateVideoInboundKbps: number;
+  bitrateAudioInboundKbps: number;
+  nackCount: number;
+  pliCount: number;
+  availableOutgoingBitrateKbps: number;
   audioLevel: number;
   connectionState: string;
 }

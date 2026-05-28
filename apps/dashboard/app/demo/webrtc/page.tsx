@@ -114,6 +114,12 @@ export default function WebRtcDemoPage() {
     typeof navigator === 'undefined' ? 'browser:unknown' : `browser:${navigator.userAgent}`,
   );
   const [sessionLabel, setSessionLabel] = useState('Browser Telemetry Demo');
+  const [sourceRole, setSourceRole] = useState<'broadcaster' | 'viewer' | 'browser-demo' | 'simulator'>(
+    'browser-demo',
+  );
+  const [streamDirection, setStreamDirection] = useState<'outbound' | 'inbound' | 'bidirectional'>(
+    'bidirectional',
+  );
   const [ingestorUrl, setIngestorUrl] = useState('http://localhost:4001');
   const [intervalMs, setIntervalMs] = useState(2000);
   const [connectionState, setConnectionState] = useState<RTCPeerConnectionState>('new');
@@ -147,6 +153,12 @@ export default function WebRtcDemoPage() {
   const startDemo = async () => {
     try {
       setErrorMessage(null);
+      if (typeof RTCPeerConnection === 'undefined') {
+        throw new Error('WebRTC is not supported in this browser/runtime.');
+      }
+      if (typeof navigator !== 'undefined' && !navigator.mediaDevices) {
+        throw new Error('mediaDevices API is unavailable; use a modern Chromium browser for this demo.');
+      }
       stopDemo();
       setConnectionState('connecting');
       setStatusMessage('Creating local loopback peer connection...');
@@ -166,6 +178,8 @@ export default function WebRtcDemoPage() {
         sourceLabel,
         runtimeLabel,
         sessionLabel,
+        sourceRole,
+        streamDirection,
         onError: (error) => {
           setErrorMessage(error instanceof Error ? error.message : 'Unknown SDK error');
         },
@@ -197,7 +211,8 @@ export default function WebRtcDemoPage() {
       <h1>WebRTC Browser Telemetry Demo</h1>
       <p>
         Creates a local loopback RTCPeerConnection, polls <code>getStats()</code>, and sends canonical
-        metrics to <code>/telemetry</code>. Includes source/runtime labels for easier debugging.
+        metrics to <code>/telemetry</code>. Includes source/runtime/role/direction labels for easier
+        debugging. This MVP path is primarily validated on Chromium-based browsers.
       </p>
 
       <div style={{ display: 'grid', gap: '0.75rem', maxWidth: 720 }}>
@@ -248,6 +263,31 @@ export default function WebRtcDemoPage() {
             onChange={(event) => setSessionLabel(event.target.value)}
             style={{ display: 'block', width: '100%', marginTop: '0.25rem' }}
           />
+        </label>
+        <label>
+          Source Role
+          <select
+            value={sourceRole}
+            onChange={(event) => setSourceRole(event.target.value as typeof sourceRole)}
+            style={{ display: 'block', width: '100%', marginTop: '0.25rem' }}
+          >
+            <option value="browser-demo">browser-demo</option>
+            <option value="broadcaster">broadcaster</option>
+            <option value="viewer">viewer</option>
+            <option value="simulator">simulator</option>
+          </select>
+        </label>
+        <label>
+          Stream Direction
+          <select
+            value={streamDirection}
+            onChange={(event) => setStreamDirection(event.target.value as typeof streamDirection)}
+            style={{ display: 'block', width: '100%', marginTop: '0.25rem' }}
+          >
+            <option value="bidirectional">bidirectional</option>
+            <option value="outbound">outbound</option>
+            <option value="inbound">inbound</option>
+          </select>
         </label>
         <label>
           Ingestor URL
@@ -301,6 +341,9 @@ export default function WebRtcDemoPage() {
         </p>
         <p>
           <strong>Runtime:</strong> {runtimeLabel}
+        </p>
+        <p>
+          <strong>Role / Direction:</strong> {sourceRole} / {streamDirection}
         </p>
         <p>
           <strong>Session label:</strong> {sessionLabel}

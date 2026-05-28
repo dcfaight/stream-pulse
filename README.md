@@ -103,6 +103,7 @@ This PR adds a practical browser path using `packages/webrtc-sdk` and a local lo
    - `sessionId` must be a UUID
    - `ingestorUrl` defaults to `http://localhost:4001`
    - `intervalMs` defaults to `2000`
+   - `sourceRole` / `streamDirection` default to `browser-demo` / `bidirectional`
 4. Click **Start Loopback + Capture**.
 5. Confirm the page shows:
    - connected/connecting peer state
@@ -126,10 +127,18 @@ The current normalization path remains deterministic and browser-practical (prim
 - `frame_height`
 - `bytes_sent_video`
 - `bytes_received_video`
+- `bytes_sent_audio`
+- `bytes_received_audio`
+- `bitrate_video_inbound_kbps`
+- `bitrate_audio_inbound_kbps`
+- `nack_count`
+- `pli_count`
+- `available_outgoing_bitrate_kbps`
 - `audio_level` (when available)
 - `connection_state` (numeric state mapping with raw state preserved in payload)
 
 Session/source labels now flow with each event (`sourceType`, `sourceLabel`, `runtimeLabel`, `sessionLabel`) and are persisted on sessions for observability.
+Role/direction labels now also flow and persist (`sourceRole`, `streamDirection`) for clearer telemetry origin and media direction interpretation.
 
 The SDK API supports:
 - start polling
@@ -138,6 +147,7 @@ The SDK API supports:
 - configurable ingestor URL
 - configurable `sessionId` and `broadcasterId`
 - configurable source/runtime/session labels
+- configurable role and stream direction labels
 - optional metric callback for latest-emitted metric display in the demo
 
 ---
@@ -230,6 +240,25 @@ Open `/sessions/:sessionId` and review the **Session Summary** block, which incl
 - dominant root-cause theme
 - final QoE score and severity
 
+### Cross-session reporting + report export
+
+After running at least two sessions (browser demo and/or simulator), open `http://localhost:3000` and review:
+- **Cross-Session Comparison**
+- **Session Cohorts**
+- **Incident + Recommendation Trends**
+- **Recommendation Tuning Feedback**
+
+From `/sessions/:sessionId`, export post-session reports:
+- JSON: `/api/reports/session/:sessionId?format=json`
+- Markdown: `/api/reports/session/:sessionId?format=md`
+
+Export reports include:
+- session metadata + source/role/direction labels
+- final QoE state
+- incident and recommendation counts
+- approvals/dismissals and helpful/not-helpful effectiveness totals
+- high-level timeline event summary
+
 ---
 
 ## Design Principles
@@ -265,7 +294,12 @@ What is now runnable:
 - dashboard session + incident + recommendation feed with lightweight polling refresh
 - session replay timeline view with chronological QoE, incident, recommendation, and operator decision events
 - session-level post-session summary on timeline view
+- role and stream-direction labels surfaced across telemetry/session reporting
+- post-session report export endpoint (`json` + `md`)
+- cross-session comparison/cohort views and incident/recommendation trend aggregation panels
+- recommendation action-type tuning feedback view (approved/helpful/dismissed/not-helpful breakdown)
 
 Still deferred for later milestones:
 - production signaling/STUN/TURN hardening (current demo is local loopback)
+- full production multi-browser validation/certification
 - autonomous remediation execution against external systems

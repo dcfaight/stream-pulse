@@ -15,6 +15,8 @@ interface SessionClientConfig {
   sourceLabel: string;
   runtimeLabel: string;
   sessionLabel: string;
+  sourceRole: 'broadcaster' | 'viewer' | 'browser-demo' | 'simulator' | 'unknown';
+  streamDirection: 'inbound' | 'outbound' | 'bidirectional' | 'unknown';
   broadcasterRole: string;
 }
 
@@ -56,6 +58,8 @@ export interface SessionClientOptions {
   sourceLabel?: string;
   runtimeLabel?: string;
   sessionLabel?: string;
+  sourceRole?: 'broadcaster' | 'viewer' | 'browser-demo' | 'simulator' | 'unknown';
+  streamDirection?: 'inbound' | 'outbound' | 'bidirectional' | 'unknown';
   broadcasterRole?: string;
   fetchImpl?: typeof fetch;
   onMetric?: (metric: { metricType: MetricType; value: number; ts: number; snapshot: StatSnapshot }) => void;
@@ -110,6 +114,38 @@ function round(value: number): number {
 function asLabel(value: string | undefined, fallback: string): string {
   const normalized = value?.trim();
   return normalized ? normalized : fallback;
+}
+
+function asSourceRole(
+  value: string | undefined,
+): 'broadcaster' | 'viewer' | 'browser-demo' | 'simulator' | 'unknown' {
+  if (value === 'broadcaster' || value === 'viewer' || value === 'browser-demo' || value === 'simulator') {
+    return value;
+  }
+  return 'unknown';
+}
+
+function asStreamDirection(
+  value: string | undefined,
+): 'inbound' | 'outbound' | 'bidirectional' | 'unknown' {
+  if (value === 'inbound' || value === 'outbound' || value === 'bidirectional') return value;
+  return 'unknown';
+}
+
+function normalizeIntervalMs(value: number | undefined, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.max(500, Math.floor(value));
+}
+
+function normalizeIngestorUrl(value: string | undefined, fallback: string): string {
+  const candidate = value?.trim() || fallback;
+  try {
+    const parsed = new URL(candidate);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return fallback;
+    return parsed.toString().replace(/\/+$/, '');
+  } catch {
+    return fallback;
+  }
 }
 
 function inferBrowserName(): string {
@@ -226,6 +262,8 @@ function buildSnapshot(config: SessionClientConfig, connectionState: RTCPeerConn
     sourceLabel: config.sourceLabel,
     runtimeLabel: config.runtimeLabel,
     sessionLabel: config.sessionLabel,
+    sourceRole: config.sourceRole,
+    streamDirection: config.streamDirection,
     broadcasterRole: config.broadcasterRole,
     browserName: inferBrowserName(),
   };
@@ -243,16 +281,16 @@ export function createSessionClient(
   const fetchImpl = options?.fetchImpl ?? fetch;
   let config: SessionClientConfig = {
     intervalMs:
-      typeof options?.intervalMs === 'number' && options.intervalMs > 250
-        ? options.intervalMs
-        : DEFAULT_INTERVAL_MS,
-    ingestorUrl: options?.ingestorUrl ?? DEFAULT_INGESTOR_URL,
+      normalizeIntervalMs(options?.intervalMs, DEFAULT_INTERVAL_MS),
+    ingestorUrl: normalizeIngestorUrl(options?.ingestorUrl, DEFAULT_INGESTOR_URL),
     sessionId: resolveSessionId(options?.sessionId),
     broadcasterId: options?.broadcasterId ?? DEFAULT_BROADCASTER_ID,
     sourceType: asLabel(options?.sourceType, DEFAULT_SOURCE_TYPE),
     sourceLabel: asLabel(options?.sourceLabel, 'local-loopback'),
     runtimeLabel: asLabel(options?.runtimeLabel, inferRuntimeLabel()),
     sessionLabel: asLabel(options?.sessionLabel, 'Browser Telemetry Demo'),
+    sourceRole: asSourceRole(options?.sourceRole ?? 'browser-demo'),
+    streamDirection: asStreamDirection(options?.streamDirection ?? 'bidirectional'),
     broadcasterRole: asLabel(options?.broadcasterRole, 'publisher'),
   };
   let timer: ReturnType<typeof setInterval> | null = null;
@@ -262,6 +300,7 @@ export function createSessionClient(
     videoBytesSent?: number;
     videoBytesReceived?: number;
     audioBytesSent?: number;
+    audioBytesReceived?: number;
     frameDrops?: number;
   } | null = null;
 
@@ -282,6 +321,8 @@ export function createSessionClient(
         sourceLabel: config.sourceLabel,
         runtimeLabel: config.runtimeLabel,
         sessionLabel: config.sessionLabel,
+        sourceRole: config.sourceRole,
+        streamDirection: config.streamDirection,
         metricType,
         value,
         ts,
@@ -320,6 +361,8 @@ export function createSessionClient(
       }
       if (typeof outboundAudioBytes === 'number') snapshot.audioBytesSent = outboundAudioBytes;
       if (typeof inboundAudioBytes === 'number') snapshot.audioBytesReceived = inboundAudioBytes;
+      emitMetric(metrics, 'bytes_sent_audio', outboundAudioBytes);
+      emitMetric(metrics, 'bytes_received_audio', inboundAudioBytes);
 
       const packetsSent = toFinite(selected.outboundVideo?.packetsSent);
       const inboundPacketsLost = toFinite(selected.inboundVideo?.packetsLost);
@@ -405,12 +448,32 @@ export function createSessionClient(
       if (
         previous &&
         now > previous.ts &&
+        previous.videoBytesReceived != null &&
+        typeof inboundVideoBytes === 'number'
+      ) {
+        const elapsedSeconds = (now - previous.ts) / 1000;
+        const deltaBytes = Math.max(0, inboundVideoBytes - previous.videoBytesReceived);
+        emitMetric(metrics, 'bitrate_video_inbound_kbps', (deltaBytes * 8) / 1000 / elapsedSeconds);
+      }
+      if (
+        previous &&
+        now > previous.ts &&
         previous.audioBytesSent != null &&
         typeof outboundAudioBytes === 'number'
       ) {
         const elapsedSeconds = (now - previous.ts) / 1000;
         const deltaBytes = Math.max(0, outboundAudioBytes - previous.audioBytesSent);
         emitMetric(metrics, 'bitrate_audio_kbps', (deltaBytes * 8) / 1000 / elapsedSeconds);
+      }
+      if (
+        previous &&
+        now > previous.ts &&
+        previous.audioBytesReceived != null &&
+        typeof inboundAudioBytes === 'number'
+      ) {
+        const elapsedSeconds = (now - previous.ts) / 1000;
+        const deltaBytes = Math.max(0, inboundAudioBytes - previous.audioBytesReceived);
+        emitMetric(metrics, 'bitrate_audio_inbound_kbps', (deltaBytes * 8) / 1000 / elapsedSeconds);
       }
 
       const frameDrops = toFinite(
@@ -445,6 +508,23 @@ export function createSessionClient(
               : undefined;
       emitMetric(metrics, 'packet_loss_pct', packetLossPct);
 
+      const nackCount = toFinite(
+        (selected.outboundVideo as { nackCount?: number } | undefined)?.nackCount ??
+          (selected.inboundVideo as { nackCount?: number } | undefined)?.nackCount,
+      );
+      const pliCount = toFinite(
+        (selected.outboundVideo as { pliCount?: number } | undefined)?.pliCount ??
+          (selected.inboundVideo as { pliCount?: number } | undefined)?.pliCount,
+      );
+      const availableOutgoingBitrateKbps = toFinite(selected.candidatePair?.availableOutgoingBitrate);
+      emitMetric(metrics, 'nack_count', nackCount);
+      emitMetric(metrics, 'pli_count', pliCount);
+      emitMetric(
+        metrics,
+        'available_outgoing_bitrate_kbps',
+        typeof availableOutgoingBitrateKbps === 'number' ? availableOutgoingBitrateKbps / 1000 : undefined,
+      );
+
       snapshot.connectionState = peerConnection.connectionState;
       emitMetric(metrics, 'connection_state', metricValueForConnectionState(peerConnection.connectionState));
 
@@ -458,6 +538,7 @@ export function createSessionClient(
         videoBytesSent: outboundVideoBytes,
         videoBytesReceived: inboundVideoBytes,
         audioBytesSent: outboundAudioBytes,
+        audioBytesReceived: inboundAudioBytes,
         frameDrops,
       };
     } catch (error) {
@@ -478,16 +559,16 @@ export function createSessionClient(
     if (overrides) {
       config = {
         intervalMs:
-          typeof overrides.intervalMs === 'number' && overrides.intervalMs > 250
-            ? overrides.intervalMs
-            : config.intervalMs,
-        ingestorUrl: overrides.ingestorUrl ?? config.ingestorUrl,
+          normalizeIntervalMs(overrides.intervalMs, config.intervalMs),
+        ingestorUrl: normalizeIngestorUrl(overrides.ingestorUrl, config.ingestorUrl),
         sessionId: resolveSessionId(overrides.sessionId ?? config.sessionId),
         broadcasterId: overrides.broadcasterId ?? config.broadcasterId,
         sourceType: asLabel(overrides.sourceType ?? config.sourceType, DEFAULT_SOURCE_TYPE),
         sourceLabel: asLabel(overrides.sourceLabel ?? config.sourceLabel, 'local-loopback'),
         runtimeLabel: asLabel(overrides.runtimeLabel ?? config.runtimeLabel, inferRuntimeLabel()),
         sessionLabel: asLabel(overrides.sessionLabel ?? config.sessionLabel, 'Browser Telemetry Demo'),
+        sourceRole: asSourceRole(overrides.sourceRole ?? config.sourceRole),
+        streamDirection: asStreamDirection(overrides.streamDirection ?? config.streamDirection),
         broadcasterRole: asLabel(overrides.broadcasterRole ?? config.broadcasterRole, 'publisher'),
       };
     }

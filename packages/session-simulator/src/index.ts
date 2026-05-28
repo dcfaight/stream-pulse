@@ -17,6 +17,12 @@ interface SimulatorConfig {
   ingestorUrl: string;
   sessionId: string;
   broadcasterId: string;
+  sourceType: string;
+  sourceLabel: string;
+  runtimeLabel: string;
+  sessionLabel: string;
+  sourceRole: 'simulator' | 'broadcaster' | 'viewer' | 'unknown';
+  streamDirection: 'outbound' | 'inbound' | 'bidirectional' | 'unknown';
 }
 
 const SCENARIOS: ScenarioName[] = [
@@ -26,6 +32,20 @@ const SCENARIOS: ScenarioName[] = [
   'bitrate-drop',
   'unstable-session',
 ];
+
+function parseSourceRole(value: string | undefined): SimulatorConfig['sourceRole'] {
+  if (value === 'simulator' || value === 'broadcaster' || value === 'viewer' || value === 'unknown') {
+    return value;
+  }
+  return 'simulator';
+}
+
+function parseStreamDirection(value: string | undefined): SimulatorConfig['streamDirection'] {
+  if (value === 'outbound' || value === 'inbound' || value === 'bidirectional' || value === 'unknown') {
+    return value;
+  }
+  return 'bidirectional';
+}
 
 function parseArgs(argv: string[]): SimulatorConfig {
   const flags = new Map<string, string>();
@@ -60,6 +80,12 @@ function parseArgs(argv: string[]): SimulatorConfig {
     ),
     sessionId: flags.get('sessionId') ?? randomUUID(),
     broadcasterId: flags.get('broadcasterId') ?? `demo-${scenarioInput}`,
+    sourceType: flags.get('sourceType') ?? 'simulator',
+    sourceLabel: flags.get('sourceLabel') ?? `scenario:${scenarioInput}`,
+    runtimeLabel: flags.get('runtimeLabel') ?? 'node:session-simulator',
+    sessionLabel: flags.get('sessionLabel') ?? `Simulator ${scenarioInput}`,
+    sourceRole: parseSourceRole(flags.get('sourceRole')),
+    streamDirection: parseStreamDirection(flags.get('streamDirection')),
   };
 }
 
@@ -123,10 +149,25 @@ async function postMetric(config: SimulatorConfig, metric: ScenarioMetric): Prom
     body: JSON.stringify({
       sessionId: config.sessionId,
       broadcasterId: config.broadcasterId,
+      sourceType: config.sourceType,
+      sourceLabel: config.sourceLabel,
+      runtimeLabel: config.runtimeLabel,
+      sessionLabel: config.sessionLabel,
+      sourceRole: config.sourceRole,
+      streamDirection: config.streamDirection,
       metricType: metric.metricType,
       value: metric.value,
       ts: Date.now(),
-      rawPayload: { sessionId: config.sessionId, ts: Date.now() },
+      rawPayload: {
+        sessionId: config.sessionId,
+        ts: Date.now(),
+        sourceType: config.sourceType,
+        sourceLabel: config.sourceLabel,
+        runtimeLabel: config.runtimeLabel,
+        sessionLabel: config.sessionLabel,
+        sourceRole: config.sourceRole,
+        streamDirection: config.streamDirection,
+      },
     }),
   });
 
@@ -149,6 +190,12 @@ Options:
   --ingestorUrl   ingestor base URL (default: http://localhost:4001)
   --sessionId     UUID session id (default: generated)
   --broadcasterId broadcaster id (default: demo-<scenario>)
+  --sourceType    source classification label (default: simulator)
+  --sourceLabel   source label (default: scenario:<scenario>)
+  --runtimeLabel  runtime label (default: node:session-simulator)
+  --sessionLabel  session label (default: Simulator <scenario>)
+  --sourceRole    simulator | broadcaster | viewer | unknown (default: simulator)
+  --streamDirection outbound | inbound | bidirectional | unknown (default: bidirectional)
 `);
 }
 

@@ -35,6 +35,9 @@ export interface SessionStatusRow {
   broadcaster_id: string;
   source_type: string;
   source_label: string | null;
+  source_role: string;
+  stream_direction: string;
+  browser_name: string | null;
   runtime_label: string | null;
   session_label: string | null;
   started_at: Date;
@@ -46,6 +49,20 @@ export interface SessionStatusRow {
   latest_qoe_score: string | null;
   latest_qoe_severity: string | null;
   latest_qoe_end_ts: Date | null;
+}
+
+export interface SessionContextRow {
+  id: string;
+  broadcaster_id: string;
+  source_type: string;
+  source_label: string | null;
+  source_role: string;
+  stream_direction: string;
+  runtime_label: string | null;
+  session_label: string | null;
+  browser_name: string | null;
+  started_at: Date;
+  status: string;
 }
 
 export interface ScorableSessionRow {
@@ -148,6 +165,77 @@ export interface SessionSummaryRow {
   final_qoe_score: string | null;
   final_qoe_severity: string | null;
   generated_at: Date;
+}
+
+export interface SessionComparisonRow {
+  session_id: string;
+  started_at: Date;
+  source_type: string;
+  source_label: string | null;
+  source_role: string;
+  stream_direction: string;
+  runtime_label: string | null;
+  incident_count: string;
+  dominant_root_cause: string | null;
+  final_qoe_score: string | null;
+  final_qoe_severity: string | null;
+  recommendation_count: string;
+  approved_count: string;
+  dismissed_count: string;
+  helpful_count: string;
+  not_helpful_count: string;
+}
+
+export interface SessionCohortRow {
+  cohort_key: string;
+  source_type: string;
+  source_role: string;
+  stream_direction: string;
+  session_count: string;
+  incident_count: string;
+  avg_incidents_per_session: string;
+  avg_final_qoe_score: string | null;
+  helpful_count: string;
+  not_helpful_count: string;
+}
+
+export interface IncidentRootCauseTrendRow {
+  root_cause: string;
+  incident_count: string;
+}
+
+export interface IncidentSeverityDistributionRow {
+  severity: string;
+  incident_count: string;
+}
+
+export interface RecommendationDecisionTrendRow {
+  total_decided: string;
+  approved_count: string;
+  dismissed_count: string;
+  approval_rate_pct: string;
+}
+
+export interface RecommendationEffectivenessTrendRow {
+  helpful_count: string;
+  not_helpful_count: string;
+  unconfirmed_count: string;
+  unknown_count: string;
+}
+
+export interface SessionSourceTrendRow {
+  source_type: string;
+  source_role: string;
+  session_count: string;
+}
+
+export interface RecommendationActionTuningRow {
+  action_type: string;
+  total_count: string;
+  approved_count: string;
+  dismissed_count: string;
+  helpful_count: string;
+  not_helpful_count: string;
 }
 
 export interface SessionReplayTimelineEventRow {
@@ -367,6 +455,9 @@ export async function listRecentSessionStatus(limit = 20): Promise<SessionStatus
         s.broadcaster_id,
         s.source_type,
         s.source_label,
+        COALESCE(NULLIF(s.metadata->>'sourceRole', ''), 'unknown') AS source_role,
+        COALESCE(NULLIF(s.metadata->>'streamDirection', ''), 'unknown') AS stream_direction,
+        NULLIF(s.metadata->>'browserName', '') AS browser_name,
         s.runtime_label,
         s.session_label,
         s.started_at,
@@ -399,6 +490,9 @@ export async function listRecentSessionStatus(limit = 20): Promise<SessionStatus
         s.broadcaster_id,
         s.source_type,
         s.source_label,
+        s.metadata->>'sourceRole',
+        s.metadata->>'streamDirection',
+        s.metadata->>'browserName',
         s.runtime_label,
         s.session_label,
         s.started_at,
@@ -416,6 +510,30 @@ export async function listRecentSessionStatus(limit = 20): Promise<SessionStatus
   );
 
   return result.rows;
+}
+
+export async function getSessionContext(sessionId: string): Promise<SessionContextRow | null> {
+  const result = await runQuery<SessionContextRow>(
+    `
+      SELECT
+        s.id,
+        s.broadcaster_id,
+        s.source_type,
+        s.source_label,
+        COALESCE(NULLIF(s.metadata->>'sourceRole', ''), 'unknown') AS source_role,
+        COALESCE(NULLIF(s.metadata->>'streamDirection', ''), 'unknown') AS stream_direction,
+        NULLIF(s.metadata->>'browserName', '') AS browser_name,
+        s.runtime_label,
+        s.session_label,
+        s.started_at,
+        s.status
+      FROM sessions s
+      WHERE s.id = $1
+      LIMIT 1;
+    `,
+    [sessionId],
+  );
+  return result.rows[0] ?? null;
 }
 
 export async function listScorableSessions(limit = 50): Promise<ScorableSessionRow[]> {
@@ -1509,6 +1627,251 @@ export async function getSessionSummary(sessionId: string): Promise<SessionSumma
     [sessionId],
   );
   return result.rows[0] ?? null;
+}
+
+export async function listSessionComparisons(limit = 25): Promise<SessionComparisonRow[]> {
+  const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(100, Math.floor(limit))) : 25;
+  const result = await runQuery<SessionComparisonRow>(
+    `
+      SELECT
+        s.id AS session_id,
+        s.started_at,
+        s.source_type,
+        s.source_label,
+        COALESCE(NULLIF(s.metadata->>'sourceRole', ''), 'unknown') AS source_role,
+        COALESCE(NULLIF(s.metadata->>'streamDirection', ''), 'unknown') AS stream_direction,
+        s.runtime_label,
+        COALESCE(inc.incident_count, 0)::text AS incident_count,
+        root.root_cause AS dominant_root_cause,
+        qoe.score::text AS final_qoe_score,
+        qoe.severity AS final_qoe_severity,
+        COALESCE(rec.recommendation_count, 0)::text AS recommendation_count,
+        COALESCE(rec.approved_count, 0)::text AS approved_count,
+        COALESCE(rec.dismissed_count, 0)::text AS dismissed_count,
+        COALESCE(rec.helpful_count, 0)::text AS helpful_count,
+        COALESCE(rec.not_helpful_count, 0)::text AS not_helpful_count
+      FROM sessions s
+      LEFT JOIN LATERAL (
+        SELECT COUNT(*) AS incident_count
+        FROM incidents i
+        WHERE i.session_id = s.id
+      ) inc ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT i.root_cause
+        FROM incidents i
+        WHERE i.session_id = s.id
+          AND i.root_cause <> ''
+        GROUP BY i.root_cause
+        ORDER BY COUNT(*) DESC, MAX(i.updated_at) DESC
+        LIMIT 1
+      ) root ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT q.score, q.severity
+        FROM qoe_segments q
+        WHERE q.session_id = s.id
+        ORDER BY q.end_ts DESC
+        LIMIT 1
+      ) qoe ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT
+          COUNT(*) AS recommendation_count,
+          COUNT(*) FILTER (WHERE r.status = 'approved') AS approved_count,
+          COUNT(*) FILTER (WHERE r.status = 'dismissed') AS dismissed_count,
+          COUNT(*) FILTER (WHERE r.effectiveness_signal = 'helpful') AS helpful_count,
+          COUNT(*) FILTER (WHERE r.effectiveness_signal = 'not_helpful') AS not_helpful_count
+        FROM agent_recommendations r
+        JOIN incidents i ON i.id = r.incident_id
+        WHERE i.session_id = s.id
+      ) rec ON TRUE
+      ORDER BY s.started_at DESC
+      LIMIT $1;
+    `,
+    [safeLimit],
+  );
+  return result.rows;
+}
+
+export async function listSessionCohorts(limit = 20): Promise<SessionCohortRow[]> {
+  const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(50, Math.floor(limit))) : 20;
+  const result = await runQuery<SessionCohortRow>(
+    `
+      WITH session_base AS (
+        SELECT
+          s.id,
+          s.source_type,
+          COALESCE(NULLIF(s.metadata->>'sourceRole', ''), 'unknown') AS source_role,
+          COALESCE(NULLIF(s.metadata->>'streamDirection', ''), 'unknown') AS stream_direction
+        FROM sessions s
+      ),
+      session_stats AS (
+        SELECT
+          sb.id,
+          sb.source_type,
+          sb.source_role,
+          sb.stream_direction,
+          COALESCE(inc.incident_count, 0) AS incident_count,
+          qoe.final_qoe_score,
+          COALESCE(rec.helpful_count, 0) AS helpful_count,
+          COALESCE(rec.not_helpful_count, 0) AS not_helpful_count
+        FROM session_base sb
+        LEFT JOIN LATERAL (
+          SELECT COUNT(*) AS incident_count
+          FROM incidents i
+          WHERE i.session_id = sb.id
+        ) inc ON TRUE
+        LEFT JOIN LATERAL (
+          SELECT q.score AS final_qoe_score
+          FROM qoe_segments q
+          WHERE q.session_id = sb.id
+          ORDER BY q.end_ts DESC
+          LIMIT 1
+        ) qoe ON TRUE
+        LEFT JOIN LATERAL (
+          SELECT
+            COUNT(*) FILTER (WHERE r.effectiveness_signal = 'helpful') AS helpful_count,
+            COUNT(*) FILTER (WHERE r.effectiveness_signal = 'not_helpful') AS not_helpful_count
+          FROM agent_recommendations r
+          JOIN incidents i ON i.id = r.incident_id
+          WHERE i.session_id = sb.id
+        ) rec ON TRUE
+      )
+      SELECT
+        CONCAT(source_type, ' / ', source_role, ' / ', stream_direction) AS cohort_key,
+        source_type,
+        source_role,
+        stream_direction,
+        COUNT(*)::text AS session_count,
+        SUM(incident_count)::text AS incident_count,
+        ROUND(AVG(incident_count::numeric), 2)::text AS avg_incidents_per_session,
+        ROUND(AVG(final_qoe_score), 2)::text AS avg_final_qoe_score,
+        SUM(helpful_count)::text AS helpful_count,
+        SUM(not_helpful_count)::text AS not_helpful_count
+      FROM session_stats
+      GROUP BY source_type, source_role, stream_direction
+      ORDER BY COUNT(*) DESC, source_type, source_role
+      LIMIT $1;
+    `,
+    [safeLimit],
+  );
+  return result.rows;
+}
+
+export async function listIncidentRootCauseTrends(limit = 10): Promise<IncidentRootCauseTrendRow[]> {
+  const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(30, Math.floor(limit))) : 10;
+  const result = await runQuery<IncidentRootCauseTrendRow>(
+    `
+      SELECT
+        COALESCE(NULLIF(root_cause, ''), 'generalized stream degradation') AS root_cause,
+        COUNT(*)::text AS incident_count
+      FROM incidents
+      GROUP BY COALESCE(NULLIF(root_cause, ''), 'generalized stream degradation')
+      ORDER BY COUNT(*) DESC
+      LIMIT $1;
+    `,
+    [safeLimit],
+  );
+  return result.rows;
+}
+
+export async function listIncidentSeverityDistribution(): Promise<IncidentSeverityDistributionRow[]> {
+  const result = await runQuery<IncidentSeverityDistributionRow>(
+    `
+      SELECT severity, COUNT(*)::text AS incident_count
+      FROM incidents
+      GROUP BY severity
+      ORDER BY COUNT(*) DESC;
+    `,
+  );
+  return result.rows;
+}
+
+export async function getRecommendationDecisionTrend(): Promise<RecommendationDecisionTrendRow> {
+  const result = await runQuery<RecommendationDecisionTrendRow>(
+    `
+      SELECT
+        COUNT(*) FILTER (WHERE status IN ('approved', 'dismissed'))::text AS total_decided,
+        COUNT(*) FILTER (WHERE status = 'approved')::text AS approved_count,
+        COUNT(*) FILTER (WHERE status = 'dismissed')::text AS dismissed_count,
+        CASE
+          WHEN COUNT(*) FILTER (WHERE status IN ('approved', 'dismissed')) = 0 THEN '0'
+          ELSE ROUND(
+            (
+              COUNT(*) FILTER (WHERE status = 'approved')::numeric
+              / COUNT(*) FILTER (WHERE status IN ('approved', 'dismissed'))::numeric
+            ) * 100,
+            2
+          )::text
+        END AS approval_rate_pct
+      FROM agent_recommendations;
+    `,
+  );
+  return (
+    result.rows[0] ?? {
+      total_decided: '0',
+      approved_count: '0',
+      dismissed_count: '0',
+      approval_rate_pct: '0',
+    }
+  );
+}
+
+export async function getRecommendationEffectivenessTrend(): Promise<RecommendationEffectivenessTrendRow> {
+  const result = await runQuery<RecommendationEffectivenessTrendRow>(
+    `
+      SELECT
+        COUNT(*) FILTER (WHERE effectiveness_signal = 'helpful')::text AS helpful_count,
+        COUNT(*) FILTER (WHERE effectiveness_signal = 'not_helpful')::text AS not_helpful_count,
+        COUNT(*) FILTER (WHERE effectiveness_signal = 'unconfirmed')::text AS unconfirmed_count,
+        COUNT(*) FILTER (WHERE effectiveness_signal = 'unknown')::text AS unknown_count
+      FROM agent_recommendations;
+    `,
+  );
+  return (
+    result.rows[0] ?? {
+      helpful_count: '0',
+      not_helpful_count: '0',
+      unconfirmed_count: '0',
+      unknown_count: '0',
+    }
+  );
+}
+
+export async function listSessionSourceTrends(): Promise<SessionSourceTrendRow[]> {
+  const result = await runQuery<SessionSourceTrendRow>(
+    `
+      SELECT
+        source_type,
+        COALESCE(NULLIF(metadata->>'sourceRole', ''), 'unknown') AS source_role,
+        COUNT(*)::text AS session_count
+      FROM sessions
+      GROUP BY source_type, COALESCE(NULLIF(metadata->>'sourceRole', ''), 'unknown')
+      ORDER BY COUNT(*) DESC, source_type, source_role;
+    `,
+  );
+  return result.rows;
+}
+
+export async function listRecommendationActionTuning(
+  limit = 12,
+): Promise<RecommendationActionTuningRow[]> {
+  const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(30, Math.floor(limit))) : 12;
+  const result = await runQuery<RecommendationActionTuningRow>(
+    `
+      SELECT
+        action_type,
+        COUNT(*)::text AS total_count,
+        COUNT(*) FILTER (WHERE status = 'approved')::text AS approved_count,
+        COUNT(*) FILTER (WHERE status = 'dismissed')::text AS dismissed_count,
+        COUNT(*) FILTER (WHERE effectiveness_signal = 'helpful')::text AS helpful_count,
+        COUNT(*) FILTER (WHERE effectiveness_signal = 'not_helpful')::text AS not_helpful_count
+      FROM agent_recommendations
+      GROUP BY action_type
+      ORDER BY COUNT(*) DESC, action_type
+      LIMIT $1;
+    `,
+    [safeLimit],
+  );
+  return result.rows;
 }
 
 export async function decideRecommendation(input: {

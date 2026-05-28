@@ -1,4 +1,5 @@
 import {
+  getSessionContext,
   getSessionSummary,
   type IncidentFeedRow,
   listRecentRecommendations,
@@ -91,12 +92,13 @@ export default async function SessionTimelinePage({
   params: Promise<{ sessionId: string }>;
 }) {
   const { sessionId } = await params;
-  const [qoeTrend, incidents, recommendations, timeline, sessionSummary] = await Promise.all([
+  const [qoeTrend, incidents, recommendations, timeline, sessionSummary, sessionContext] = await Promise.all([
     listSessionQoeTrend(sessionId, 120).catch(() => []),
     listSessionIncidents(sessionId, 50).catch(() => []),
     listRecentRecommendations(100, sessionId).catch(() => []),
     listSessionReplayTimeline(sessionId, 300).catch(() => []),
     getSessionSummary(sessionId).catch(() => null),
+    getSessionContext(sessionId).catch(() => null),
   ]);
 
   return (
@@ -110,9 +112,27 @@ export default async function SessionTimelinePage({
         Session <code>{sessionId}</code> chronological audit trail: QoE segments, incident changes,
         recommendations, and operator decisions.
       </p>
+      <p>
+        Export report:{' '}
+        <a href={`/api/reports/session/${sessionId}?format=json`} target="_blank" rel="noreferrer">
+          JSON
+        </a>{' '}
+        •{' '}
+        <a href={`/api/reports/session/${sessionId}?format=md`} target="_blank" rel="noreferrer">
+          Markdown
+        </a>
+      </p>
       {sessionSummary ? (
         <section style={{ border: '1px solid #ddd', padding: '0.9rem', marginBottom: '1rem' }}>
           <h2 style={{ marginTop: 0 }}>Session Summary</h2>
+          {sessionContext ? (
+            <p>
+              Source: {sessionContext.source_type}
+              {sessionContext.source_label ? ` (${sessionContext.source_label})` : ''} • Role:{' '}
+              {sessionContext.source_role} • Direction: {sessionContext.stream_direction} • Runtime:{' '}
+              {sessionContext.runtime_label ?? '—'} • Browser: {sessionContext.browser_name ?? '—'}
+            </p>
+          ) : null}
           <p>
             Incidents: {sessionSummary.incident_count} ({sessionSummary.resolved_incident_count} resolved /{' '}
             {sessionSummary.open_incident_count} open) • Recommendations: {sessionSummary.recommendation_count}{' '}

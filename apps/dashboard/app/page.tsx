@@ -1,11 +1,19 @@
 import {
   decideRecommendation,
+  getRecommendationDecisionTrend,
+  getRecommendationEffectivenessTrend,
   resolveIncident,
   type IncidentFeedRow,
+  listIncidentRootCauseTrends,
+  listIncidentSeverityDistribution,
   listRecentIncidents,
   type RecommendationFeedRow,
   listRecentRecommendations,
+  listRecommendationActionTuning,
   listRecentSessionStatus,
+  listSessionCohorts,
+  listSessionComparisons,
+  listSessionSourceTrends,
 } from '@stream-pulse/db';
 import Link from 'next/link';
 import { revalidatePath } from 'next/cache';
@@ -45,6 +53,12 @@ function effectivenessStyle(
   if (status === 'not_helpful') return { backgroundColor: '#fee2e2', color: '#991b1b' };
   if (status === 'unconfirmed') return { backgroundColor: '#fff8db', color: '#854d0e' };
   return { backgroundColor: '#f3f4f6', color: '#374151' };
+}
+
+function toInt(value: string | null | undefined): number {
+  if (!value) return 0;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function asObject(value: unknown): Record<string, unknown> | null {
@@ -135,17 +149,49 @@ async function resolveIncidentAction(formData: FormData): Promise<void> {
 }
 
 export default async function Home() {
-  const sessions = await listRecentSessionStatus(25).catch(() => []);
-  const incidents = await listRecentIncidents(25).catch(() => []);
-  const recommendations = await listRecentRecommendations(25).catch(() => []);
+  const [
+    sessions,
+    incidents,
+    recommendations,
+    sessionComparisons,
+    sessionCohorts,
+    rootCauseTrends,
+    severityDistribution,
+    sourceTrends,
+    decisionTrend,
+    effectivenessTrend,
+    actionTuning,
+  ] = await Promise.all([
+    listRecentSessionStatus(25).catch(() => []),
+    listRecentIncidents(25).catch(() => []),
+    listRecentRecommendations(25).catch(() => []),
+    listSessionComparisons(20).catch(() => []),
+    listSessionCohorts(12).catch(() => []),
+    listIncidentRootCauseTrends(8).catch(() => []),
+    listIncidentSeverityDistribution().catch(() => []),
+    listSessionSourceTrends().catch(() => []),
+    getRecommendationDecisionTrend().catch(() => ({
+      total_decided: '0',
+      approved_count: '0',
+      dismissed_count: '0',
+      approval_rate_pct: '0',
+    })),
+    getRecommendationEffectivenessTrend().catch(() => ({
+      helpful_count: '0',
+      not_helpful_count: '0',
+      unconfirmed_count: '0',
+      unknown_count: '0',
+    })),
+    listRecommendationActionTuning(10).catch(() => []),
+  ]);
 
   return (
     <main style={{ fontFamily: 'system-ui, sans-serif', margin: '2rem auto', maxWidth: 980 }}>
       <AutoRefresh intervalMs={5000} />
       <h1>StreamPulse Status</h1>
       <p>
-        Session QoE, incidents, and recommendation lifecycle view. Open a session timeline for replay and
-        audit details. Refreshes every 5 seconds. Use the{' '}
+        Session QoE, incidents, recommendation lifecycle, and cross-session reporting view. Open a
+        session timeline for replay, export, and audit details. Refreshes every 5 seconds. Use the{' '}
         <Link href="/demo/webrtc">WebRTC demo page</Link> to ingest real browser getStats telemetry.
       </p>
 
@@ -166,6 +212,9 @@ export default async function Home() {
                 'Session ID',
                 'Broadcaster',
                 'Source',
+                'Role',
+                'Direction',
+                'Browser',
                 'Session Label',
                 'Status',
                 'Started',
@@ -177,6 +226,7 @@ export default async function Home() {
                 'QoE Severity',
                 'QoE Updated',
                 'Replay',
+                'Report',
               ].map((heading) => (
                 <th
                   key={heading}
@@ -199,6 +249,13 @@ export default async function Home() {
                 <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
                   {session.source_type}
                   {session.source_label ? ` (${session.source_label})` : ''}
+                </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>{session.source_role}</td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  {session.stream_direction}
+                </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  {session.browser_name ?? '—'}
                 </td>
                 <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
                   {session.session_label ?? '—'}
@@ -246,8 +303,203 @@ export default async function Home() {
                 <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
                   <Link href={`/sessions/${session.id}`}>Open Timeline</Link>
                 </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  <a href={`/api/reports/session/${session.id}?format=json`} target="_blank" rel="noreferrer">
+                    Export JSON
+                  </a>
+                </td>
               </tr>
             ))}
+          </tbody>
+        </table>
+      )}
+
+      <h2 style={{ marginTop: '2rem' }}>Cross-Session Comparison ({sessionComparisons.length})</h2>
+      {sessionComparisons.length === 0 ? (
+        <p>No cross-session comparison rows yet.</p>
+      ) : (
+        <table style={{ borderCollapse: 'collapse', width: '100%', border: '1px solid #ddd' }}>
+          <thead>
+            <tr>
+              {[
+                'Session',
+                'Started',
+                'Source',
+                'Role',
+                'Direction',
+                'Incidents',
+                'Dominant Root Cause',
+                'Final QoE',
+                'Recommendations',
+                'Helpful / Not Helpful',
+              ].map((heading) => (
+                <th key={heading} style={{ border: '1px solid #ddd', padding: '0.5rem', textAlign: 'left' }}>
+                  {heading}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {sessionComparisons.map((row) => (
+              <tr key={row.session_id}>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  <Link href={`/sessions/${row.session_id}`}>
+                    <code>{row.session_id}</code>
+                  </Link>
+                </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>{formatTimestamp(row.started_at)}</td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  {row.source_type}
+                  {row.source_label ? ` (${row.source_label})` : ''}
+                </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>{row.source_role}</td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>{row.stream_direction}</td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>{row.incident_count}</td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>{row.dominant_root_cause ?? '—'}</td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  {row.final_qoe_score ?? '—'} ({row.final_qoe_severity ?? '—'})
+                </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  {row.recommendation_count} ({row.approved_count} approved / {row.dismissed_count} dismissed)
+                </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  {row.helpful_count} / {row.not_helpful_count}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      <h2 style={{ marginTop: '2rem' }}>Session Cohorts ({sessionCohorts.length})</h2>
+      {sessionCohorts.length === 0 ? (
+        <p>No cohort rows yet.</p>
+      ) : (
+        <table style={{ borderCollapse: 'collapse', width: '100%', border: '1px solid #ddd' }}>
+          <thead>
+            <tr>
+              {[
+                'Cohort',
+                'Sessions',
+                'Incident Count',
+                'Avg Incidents / Session',
+                'Avg Final QoE',
+                'Helpful / Not Helpful',
+              ].map((heading) => (
+                <th key={heading} style={{ border: '1px solid #ddd', padding: '0.5rem', textAlign: 'left' }}>
+                  {heading}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {sessionCohorts.map((row) => (
+              <tr key={row.cohort_key}>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>{row.cohort_key}</td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>{row.session_count}</td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>{row.incident_count}</td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  {row.avg_incidents_per_session}
+                </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  {row.avg_final_qoe_score ?? '—'}
+                </td>
+                <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>
+                  {row.helpful_count} / {row.not_helpful_count}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      <h2 style={{ marginTop: '2rem' }}>Incident + Recommendation Trends</h2>
+      <div style={{ border: '1px solid #ddd', padding: '0.75rem' }}>
+        <p>
+          Recommendation approval rate: <strong>{decisionTrend.approval_rate_pct}%</strong> (
+          {decisionTrend.approved_count} approved / {decisionTrend.dismissed_count} dismissed /{' '}
+          {decisionTrend.total_decided} decided)
+        </p>
+        <p>
+          Effectiveness: {effectivenessTrend.helpful_count} helpful / {effectivenessTrend.not_helpful_count}{' '}
+          not helpful / {effectivenessTrend.unconfirmed_count} unconfirmed / {effectivenessTrend.unknown_count}{' '}
+          unknown
+        </p>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(280px,1fr))', gap: '0.75rem' }}>
+        <div style={{ border: '1px solid #ddd', padding: '0.75rem' }}>
+          <h3 style={{ marginTop: 0 }}>Top Root Causes</h3>
+          <ul style={{ margin: 0, paddingLeft: '1.1rem' }}>
+            {rootCauseTrends.map((row) => (
+              <li key={row.root_cause}>
+                {row.root_cause}: {row.incident_count}
+              </li>
+            ))}
+          </ul>
+        </div>
+        <div style={{ border: '1px solid #ddd', padding: '0.75rem' }}>
+          <h3 style={{ marginTop: 0 }}>Incident Severity Distribution</h3>
+          <ul style={{ margin: 0, paddingLeft: '1.1rem' }}>
+            {severityDistribution.map((row) => (
+              <li key={row.severity}>
+                {row.severity}: {row.incident_count}
+              </li>
+            ))}
+          </ul>
+        </div>
+        <div style={{ border: '1px solid #ddd', padding: '0.75rem' }}>
+          <h3 style={{ marginTop: 0 }}>Sessions by Source/Role</h3>
+          <ul style={{ margin: 0, paddingLeft: '1.1rem' }}>
+            {sourceTrends.map((row) => (
+              <li key={`${row.source_type}-${row.source_role}`}>
+                {row.source_type} / {row.source_role}: {row.session_count}
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
+
+      <h2 style={{ marginTop: '2rem' }}>Recommendation Tuning Feedback ({actionTuning.length})</h2>
+      {actionTuning.length === 0 ? (
+        <p>No recommendation action feedback rows yet.</p>
+      ) : (
+        <table style={{ borderCollapse: 'collapse', width: '100%', border: '1px solid #ddd' }}>
+          <thead>
+            <tr>
+              {[
+                'Action Type',
+                'Total',
+                'Approved',
+                'Dismissed',
+                'Helpful',
+                'Not Helpful',
+                'Approval Rate',
+                'Helpful Rate',
+              ].map((heading) => (
+                <th key={heading} style={{ border: '1px solid #ddd', padding: '0.5rem', textAlign: 'left' }}>
+                  {heading}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {actionTuning.map((row) => {
+              const total = Math.max(1, toInt(row.total_count));
+              const approvedRate = ((toInt(row.approved_count) / total) * 100).toFixed(1);
+              const helpfulRate = ((toInt(row.helpful_count) / total) * 100).toFixed(1);
+              return (
+                <tr key={row.action_type}>
+                  <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>{row.action_type}</td>
+                  <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>{row.total_count}</td>
+                  <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>{row.approved_count}</td>
+                  <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>{row.dismissed_count}</td>
+                  <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>{row.helpful_count}</td>
+                  <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>{row.not_helpful_count}</td>
+                  <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>{approvedRate}%</td>
+                  <td style={{ border: '1px solid #ddd', padding: '0.5rem' }}>{helpfulRate}%</td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       )}
